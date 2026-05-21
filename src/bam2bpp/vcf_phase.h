@@ -1,0 +1,75 @@
+/*
+ * vcf_phase.h  –  phased VCF + BAM coverage → haplotype sequences
+ *
+ * This module implements --phasing vcf mode.  For each locus it runs two
+ * passes in order:
+ *
+ *   Pass 1 (BAM pileup)
+ *     Every position with depth ≥ min_dp gets the reference base written
+ *     into both haplotype strings.  Positions below threshold stay 'N'.
+ *     This correctly distinguishes "covered, invariant" from "not covered".
+ *
+ *   Pass 2 (VCF query)
+ *     Every variant record in the locus is read.  The phased GT field
+ *     determines which allele goes into hap1 (^1) and which into hap2 (^2).
+ *     VCF values overwrite whatever pass 1 wrote, including low-DP
+ *     masking based on the FORMAT/DP field.
+ *
+ * The result is two fully phased haplotype sequences per sample with no
+ * reference-allele imputation at uncovered sites.
+ */
+
+#ifndef VCF_PHASE_H
+#define VCF_PHASE_H
+
+#include <htslib/vcf.h>
+#include <htslib/hts.h>
+
+#include "bam2bpp.h"
+
+/* Policy for unphased heterozygous calls (GT uses '/' rather than '|').
+ * Defined in bam2bpp.h — repeated here for documentation only.
+ *   UNPHASED_MISSING  write N to both haplotypes (safe default)
+ *   UNPHASED_IUPAC    write IUPAC ambiguity code to both
+ */
+
+/* Open phased VCF/BCF and load its index.
+ * path must point to a bgzipped, tabix- or CSI-indexed file.
+ * Returns NULL on failure. */
+typedef struct {
+    htsFile   *fp;
+    bcf_hdr_t *hdr;
+    hts_idx_t *idx;
+    char      *path;
+} VcfPhase;
+
+VcfPhase *open_vcf_phase(const char *path);
+void      close_vcf_phase(VcfPhase *v);
+
+/*
+ * process_locus_vcf()
+ *
+ * Two-pass locus processor for --phasing vcf mode.
+ *
+ * bams[]     : one open BAM per sample (provides coverage for non-variant sites)
+ * n_bams     : number of BAMs / samples
+ * vcf        : phased VCF opened with open_vcf_phase()
+ * loc        : locus definition (chrom, start, end, name)
+ * ref_seq    : reference bases for [loc->start, loc->end), uppercase
+ * args       : global args (min_dp, min_bq, min_mq, unphased_policy, etc.)
+ * result     : output — caller provides the LocusResult shell; function fills it
+ * mean_dp_out: mean per-position BAM depth across all samples (for stats)
+ *
+ * Always emits 2 × n_bams sequences (one haplotype pair per sample).
+ * Returns 0 on success, -1 on error.
+ */
+int process_locus_vcf(BamFile       **bams,
+                      int             n_bams,
+                      VcfPhase       *vcf,
+                      const Locus    *loc,
+                      const char     *ref_seq,
+                      const Args     *args,
+                      LocusResult    *result,
+                      double         *mean_dp_out);
+
+#endif /* VCF_PHASE_H */

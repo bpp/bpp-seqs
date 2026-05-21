@@ -1,0 +1,17 @@
+# Build artifacts
+*.o
+*.a
+*.so
+*.dylib
+
+# Binary
+/bpp-seqs
+
+# Editor / OS
+.DS_Store
+*.swp
+*~
+
+# Local scratch and the original transfer bundle
+/tmp/
+/aln.seq.*

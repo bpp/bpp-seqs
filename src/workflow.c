@@ -1,0 +1,193 @@
+#include "workflow.h"
+
+#include <stdio.h>
+#include <stdlib.h>
+#include <string.h>
+
+const char *workflow_name(WorkflowKind w)
+{
+    switch (w) {
+        case WF_BAM2BPP:                return "bam2bpp";
+        case WF_BAM2BPP_NEEDS_BED:      return "bam2bpp_needs_bed";
+        case WF_BAM2BPP_NEEDS_REF:      return "bam2bpp_needs_ref";
+        case WF_NEEDS_ALIGNMENT_FIRST:  return "needs_alignment_first";
+        case WF_FASTA2BPP:              return "fasta2bpp";
+        case WF_PHYLIP2BPP:             return "phylip2bpp";
+        case WF_NEXUS2BPP:              return "nexus2bpp";
+        case WF_GVCF2BPP:               return "gvcf2bpp";
+        case WF_VCF_NOT_RECOMMENDED:    return "vcf_not_recommended";
+        case WF_ASSEMBLY_NOT_SUPPORTED: return "assembly_not_supported";
+        case WF_NONE:
+        default:                        return "unknown";
+    }
+}
+
+static char *xstrdup_local(const char *s)
+{
+    if (!s) return NULL;
+    size_t n = strlen(s);
+    char *r = (char *)malloc(n + 1);
+    if (!r) return NULL;
+    memcpy(r, s, n + 1);
+    return r;
+}
+
+static int count_type(FileInfo **files, int n, FileType t)
+{
+    int c = 0;
+    for (int i = 0; i < n; i++) if (files[i]->ft == t) c++;
+    return c;
+}
+
+static int has_imap(FileInfo **files, int n)
+{
+    return count_type(files, n, BS_IMAP) > 0;
+}
+
+/* Collect sample names that need an Imap assignment. From BAMs we use
+ * @RG SM tag; from MSA/PHYLIP/NEXUS/VCF we use sequence/sample names. */
+static void gather_samples_needing_assignment(FileInfo **files, int n,
+                                              char ***out, int *n_out)
+{
+    char **list = NULL;
+    int   ln = 0;
+
+    for (int i = 0; i < n; i++) {
+        FileInfo *fi = files[i];
+        if ((fi->ft == BS_BAM || fi->ft == BS_CRAM) && fi->sample_name) {
+            /* dedupe */
+            int found = 0;
+            for (int k = 0; k < ln; k++) if (strcmp(list[k], fi->sample_name) == 0) { found = 1; break; }
+            if (!found) {
+                list = (char **)realloc(list, sizeof(char *) * (size_t)(ln + 1));
+                list[ln++] = xstrdup_local(fi->sample_name);
+            }
+        } else if (fi->ft == BS_VCF || fi->ft == BS_GVCF) {
+            for (int j = 0; j < fi->n_sample_names; j++) {
+                int found = 0;
+                for (int k = 0; k < ln; k++) if (strcmp(list[k], fi->sample_names[j]) == 0) { found = 1; break; }
+                if (!found) {
+                    list = (char **)realloc(list, sizeof(char *) * (size_t)(ln + 1));
+                    list[ln++] = xstrdup_local(fi->sample_names[j]);
+                }
+            }
+        } else if (fi->ft == BS_FASTA_MSA || fi->ft == BS_PHYLIP || fi->ft == BS_NEXUS) {
+            for (int j = 0; j < fi->n_sequence_names; j++) {
+                int found = 0;
+                for (int k = 0; k < ln; k++) if (strcmp(list[k], fi->sequence_names[j]) == 0) { found = 1; break; }
+                if (!found) {
+                    list = (char **)realloc(list, sizeof(char *) * (size_t)(ln + 1));
+                    list[ln++] = xstrdup_local(fi->sequence_names[j]);
+                }
+            }
+        }
+    }
+    *out = list;
+    *n_out = ln;
+}
+
+static void add_imap_missing(WorkflowDecision *d, FileInfo **files, int n)
+{
+    char **samps = NULL; int ns = 0;
+    gather_samples_needing_assignment(files, n, &samps, &ns);
+
+    d->missing = (MissingItem *)realloc(d->missing,
+        sizeof(MissingItem) * (size_t)(d->n_missing + 1));
+    MissingItem *mi = &d->missing[d->n_missing++];
+    mi->item = xstrdup_local("imap_file");
+    mi->required = 1;
+    mi->description = xstrdup_local(
+        "Tab-separated file mapping each sample name to a population or species. "
+        "Two columns, no header. Sample names must match BAM @RG SM tags.");
+    mi->samples_needing_assignment = samps;
+    mi->n_samples_needing_assignment = ns;
+    mi->format_example = xstrdup_local("ind1\tpopA\nind2\tpopA\nind3\tpopB\nind4\tpopB");
+}
+
+WorkflowDecision *workflow_decide(FileInfo **files, int n)
+{
+    WorkflowDecision *d = (WorkflowDecision *)calloc(1, sizeof(WorkflowDecision));
+    if (!d) return NULL;
+    d->workflow = WF_NONE;
+
+    int n_bam     = count_type(files, n, BS_BAM) + count_type(files, n, BS_CRAM);
+    int n_fastq   = count_type(files, n, BS_FASTQ);
+    int n_ref     = count_type(files, n, BS_FASTA_REFERENCE);
+    int n_bed     = count_type(files, n, BS_BED);
+    int n_msa     = count_type(files, n, BS_FASTA_MSA);
+    int n_contigs = count_type(files, n, BS_FASTA_CONTIGS);
+    int n_phylip  = count_type(files, n, BS_PHYLIP);
+    int n_nexus   = count_type(files, n, BS_NEXUS);
+    int n_vcf     = count_type(files, n, BS_VCF);
+    int n_gvcf    = count_type(files, n, BS_GVCF);
+
+    /* Priority order: most specific actionable workflow first. */
+    if (n_bam > 0 && n_ref > 0 && n_bed > 0) {
+        d->workflow = WF_BAM2BPP;
+    } else if (n_bam > 0 && n_bed == 0) {
+        d->workflow = WF_BAM2BPP_NEEDS_BED;
+    } else if (n_bam > 0 && n_ref == 0 && n_bed > 0) {
+        d->workflow = WF_BAM2BPP_NEEDS_REF;
+    } else if (n_fastq > 0 && n_ref > 0 && n_bed > 0) {
+        d->workflow = WF_NEEDS_ALIGNMENT_FIRST;
+    } else if (n_msa > 0) {
+        d->workflow = WF_FASTA2BPP;
+    } else if (n_phylip > 0) {
+        d->workflow = WF_PHYLIP2BPP;
+    } else if (n_nexus > 0) {
+        d->workflow = WF_NEXUS2BPP;
+    } else if (n_gvcf > 0 && n_bed > 0) {
+        d->workflow = WF_GVCF2BPP;
+    } else if (n_vcf > 0 && n_bed > 0) {
+        d->workflow = WF_VCF_NOT_RECOMMENDED;
+    } else if (n_contigs > 0) {
+        d->workflow = WF_ASSEMBLY_NOT_SUPPORTED;
+    } else {
+        d->workflow = WF_NONE;
+    }
+
+    /* The only thing that goes in missing[] is an absent Imap, and only
+     * for workflows that need it. */
+    int needs_imap = 0;
+    switch (d->workflow) {
+        case WF_BAM2BPP:
+        case WF_FASTA2BPP:
+        case WF_PHYLIP2BPP:
+        case WF_NEXUS2BPP:
+        case WF_GVCF2BPP:
+            needs_imap = 1;
+            break;
+        default:
+            needs_imap = 0;
+    }
+
+    if (needs_imap && !has_imap(files, n)) {
+        add_imap_missing(d, files, n);
+    }
+
+    /* Ready to run iff: have a real conversion workflow AND no missing items. */
+    int convertable = (d->workflow == WF_BAM2BPP ||
+                       d->workflow == WF_FASTA2BPP ||
+                       d->workflow == WF_PHYLIP2BPP ||
+                       d->workflow == WF_NEXUS2BPP ||
+                       d->workflow == WF_GVCF2BPP);
+    d->ready_to_run = (convertable && d->n_missing == 0);
+
+    return d;
+}
+
+void workflow_decision_free(WorkflowDecision *d)
+{
+    if (!d) return;
+    for (int i = 0; i < d->n_missing; i++) {
+        free(d->missing[i].item);
+        free(d->missing[i].description);
+        free(d->missing[i].format_example);
+        for (int j = 0; j < d->missing[i].n_samples_needing_assignment; j++) {
+            free(d->missing[i].samples_needing_assignment[j]);
+        }
+        free(d->missing[i].samples_needing_assignment);
+    }
+    free(d->missing);
+    free(d);
+}
