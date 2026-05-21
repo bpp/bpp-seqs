@@ -15,3 +15,18 @@
 # Local scratch and the original transfer bundle
 /tmp/
 /aln.seq.*
+
+# tests/realdata: download artifacts and pipeline outputs are not tracked;
+# only README.md, setup.sh, and run.sh are committed.
+tests/realdata/*.bam
+tests/realdata/*.bam.bai
+tests/realdata/*.cram
+tests/realdata/*.crai
+tests/realdata/*.cram.crai
+tests/realdata/*.fa
+tests/realdata/*.fa.fai
+tests/realdata/*.fa.gz
+tests/realdata/samples.imap
+tests/realdata/mask.bed
+tests/realdata/loci.bed
+tests/realdata/result.*

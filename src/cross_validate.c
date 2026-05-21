@@ -114,40 +114,19 @@ CrossValidation *cross_validate(FileInfo **files, int n)
         }
     }
 
-    /* 2. BAM @SQ vs FASTA reference */
     FileInfo *ref_fa = NULL;
     for (int i = 0; i < n; i++) {
         if (files[i]->ft == BS_FASTA_REFERENCE) { ref_fa = files[i]; break; }
     }
-    if (ref_fa && first_bam) {
-        /* For each BAM @SQ name, require it to be one of the FASTA sequence
-         * names. We don't compare lengths against the FASTA (would need to
-         * parse it again); just names. */
-        for (int i = 0; i < first_bam->n_seq_refs; i++) {
-            const char *sq = first_bam->seq_refs[i].name;
-            int found = 0;
-            for (int j = 0; j < ref_fa->n_sequence_names; j++) {
-                if (ref_fa->sequence_names[j] && strcmp(ref_fa->sequence_names[j], sq) == 0) {
-                    found = 1; break;
-                }
-            }
-            if (!found) {
-                cv->bam_reference_matches_fasta = 0;
-                char msg[512];
-                snprintf(msg, sizeof(msg),
-                    "BAM @SQ name '%s' not found in FASTA reference '%s'.",
-                    sq, ref_fa->path);
-                add_issue(cv, "BAM_FASTA_MISMATCH", "error", ref_fa->path, msg);
-                break;
-            }
-        }
-    }
-
-    /* 3. BED chromosomes in BAM @SQ */
     FileInfo *bed = NULL;
     for (int i = 0; i < n; i++) {
         if (files[i]->ft == BS_BED) { bed = files[i]; break; }
     }
+
+    /* 2. BED chromosomes in BAM @SQ — every BED chrom must be aligned-to
+     * in the BAM. (We don't require BAM @SQ ⊆ FASTA: BAMs sliced from a
+     * whole-genome alignment legitimately carry all their original @SQ
+     * lines while the local reference is just a chrom or two.) */
     if (bed && first_bam) {
         for (int i = 0; i < bed->n_chromosomes; i++) {
             if (!seqref_has(first_bam->seq_refs, first_bam->n_seq_refs, bed->chromosomes[i])) {
@@ -157,6 +136,28 @@ CrossValidation *cross_validate(FileInfo **files, int n)
                     "BED chromosome '%s' not found in BAM @SQ headers.",
                     bed->chromosomes[i]);
                 add_issue(cv, "CHROMOSOME_MISMATCH", "error", bed->path, msg);
+            }
+        }
+    }
+
+    /* 3. BED chromosomes in FASTA reference — the chroms we will actually
+     * pile up over must exist in the reference. */
+    if (bed && ref_fa) {
+        for (int i = 0; i < bed->n_chromosomes; i++) {
+            int found = 0;
+            for (int j = 0; j < ref_fa->n_sequence_names; j++) {
+                if (ref_fa->sequence_names[j] &&
+                    strcmp(ref_fa->sequence_names[j], bed->chromosomes[i]) == 0) {
+                    found = 1; break;
+                }
+            }
+            if (!found) {
+                cv->bam_reference_matches_fasta = 0;
+                char msg[512];
+                snprintf(msg, sizeof(msg),
+                    "BED chromosome '%s' not found in FASTA reference '%s'.",
+                    bed->chromosomes[i], ref_fa->path);
+                add_issue(cv, "BAM_FASTA_MISMATCH", "error", ref_fa->path, msg);
             }
         }
     }
