@@ -309,6 +309,8 @@ static int run_bam2bpp(const CLI *c, FileInfo **files, int n_files,
         if (!vcf) { close_bams(bams, a.n_bams); fai_destroy(fai); goto fail; }
     }
 
+    bam2bpp_writer_set_quiet(c->quiet);
+
     if (!c->quiet) {
         fprintf(stderr, "bpp-seqs: %d loci, %d samples\n", n_loci, a.n_bams);
     }
@@ -580,7 +582,8 @@ int main(int argc, char **argv)
                 .max_missing   = cli.max_missing,
                 .min_snps      = cli.min_snps,
                 .keep_invariant = cli.keep_invariant,
-                .quiet         = cli.quiet
+                .quiet         = cli.quiet,
+                .phasing       = cli.phasing
             };
             switch (d->workflow) {
                 case WF_BAM2BPP:

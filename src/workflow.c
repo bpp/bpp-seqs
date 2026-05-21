@@ -104,6 +104,19 @@ static void add_imap_missing(WorkflowDecision *d, FileInfo **files, int n)
     mi->format_example = xstrdup_local("ind1\tpopA\nind2\tpopA\nind3\tpopB\nind4\tpopB");
 }
 
+static void add_missing(WorkflowDecision *d, const char *item, const char *desc)
+{
+    d->missing = (MissingItem *)realloc(d->missing,
+        sizeof(MissingItem) * (size_t)(d->n_missing + 1));
+    MissingItem *mi = &d->missing[d->n_missing++];
+    mi->item = xstrdup_local(item);
+    mi->required = 1;
+    mi->description = xstrdup_local(desc);
+    mi->samples_needing_assignment = NULL;
+    mi->n_samples_needing_assignment = 0;
+    mi->format_example = NULL;
+}
+
 WorkflowDecision *workflow_decide(FileInfo **files, int n)
 {
     WorkflowDecision *d = (WorkflowDecision *)calloc(1, sizeof(WorkflowDecision));
@@ -165,6 +178,43 @@ WorkflowDecision *workflow_decide(FileInfo **files, int n)
         add_imap_missing(d, files, n);
     }
 
+    /* Partial-BAM workflows: list the still-missing piece. */
+    if (d->workflow == WF_BAM2BPP_NEEDS_BED) {
+        add_missing(d, "bed_file",
+            "BED file defining locus intervals: chrom<TAB>start<TAB>end[<TAB>name]. "
+            "Chrom names must match the BAM @SQ headers; start is 0-based, end is exclusive.");
+    } else if (d->workflow == WF_BAM2BPP_NEEDS_REF) {
+        add_missing(d, "reference_fasta",
+            "Reference FASTA the BAMs were aligned to, with a .fai index "
+            "(produced by `samtools faidx ref.fa`).");
+    }
+
+    /* Workflow-level advisories for diagnostic-only states. */
+    switch (d->workflow) {
+        case WF_VCF_NOT_RECOMMENDED:
+            d->advisory = xstrdup_local(
+                "Standard (non-gVCF) VCF cannot distinguish 'invariant and covered' "
+                "from 'not covered' at non-variant sites. BPP requires that "
+                "distinction. Use the BAM files this VCF was called from, or a gVCF "
+                "with coverage bands, instead.");
+            break;
+        case WF_ASSEMBLY_NOT_SUPPORTED:
+            d->advisory = xstrdup_local(
+                "Assembled contigs cannot be used directly as BPP input. "
+                "Loci must first be defined and sequences aligned across individuals. "
+                "Either align reads to a reference and provide BAM+BED, or build an "
+                "MSA per locus and provide it as FASTA.");
+            break;
+        case WF_NEEDS_ALIGNMENT_FIRST:
+            d->advisory = xstrdup_local(
+                "FASTQ input requires alignment before BPP conversion. "
+                "Run an aligner (bwa mem for short reads, minimap2 for long reads) "
+                "against the reference FASTA, sort and index the BAMs, and re-run "
+                "with BAM+reference+BED.");
+            break;
+        default: break;
+    }
+
     /* Ready to run iff: have a real conversion workflow AND no missing items. */
     int convertable = (d->workflow == WF_BAM2BPP ||
                        d->workflow == WF_FASTA2BPP ||
@@ -189,5 +239,6 @@ void workflow_decision_free(WorkflowDecision *d)
         free(d->missing[i].samples_needing_assignment);
     }
     free(d->missing);
+    free(d->advisory);
     free(d);
 }

@@ -4,6 +4,7 @@
 
 #include "inspect.h"
 #include "output.h"
+#include "bam2bpp/bam2bpp.h"   /* for Phasing enum */
 
 typedef struct {
     int    min_length;
@@ -11,6 +12,7 @@ typedef struct {
     int    min_snps;
     int    keep_invariant;
     int    quiet;
+    Phasing phasing;    /* affects gvcf2bpp only for now */
 } ConvertOpts;
 
 /* Each converter writes <prefix>.txt (sequences), <prefix>.imap, and

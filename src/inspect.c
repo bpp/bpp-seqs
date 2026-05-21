@@ -167,6 +167,10 @@ void file_info_free(FileInfo *fi)
     free_str_array(fi->sequence_names, fi->n_sequence_names);
     free_str_array(fi->sample_names, fi->n_sample_names);
     free(fi->vcf_reference_in_header);
+    if (fi->vcf_contigs) {
+        for (int i = 0; i < fi->n_vcf_contigs; i++) free(fi->vcf_contigs[i].name);
+        free(fi->vcf_contigs);
+    }
     free_str_array(fi->chromosomes, fi->n_chromosomes);
     free_str_array(fi->imap_sample_names, fi->imap_n_sample_names);
     free_str_array(fi->imap_population_names, fi->imap_n_population_names);
@@ -558,10 +562,18 @@ static void inspect_bam(const char *path, FileInfo *fi, int is_cram)
     inspect_bam_header(hdr, fi, is_cram);
     inspect_bam_reads(sf, hdr, fi);
 
-    fi->indexed = has_companion_index(path, ".bai", ".csi");
-    if (!fi->indexed) {
-        file_info_add_warning(fi, "MISSING_INDEX", "warning",
-            "No .bai/.csi index file found alongside this BAM.");
+    if (is_cram) {
+        fi->indexed = has_companion_index(path, ".crai", ".csi");
+        if (!fi->indexed) {
+            file_info_add_warning(fi, "MISSING_INDEX", "warning",
+                "No .crai/.csi index file found alongside this CRAM.");
+        }
+    } else {
+        fi->indexed = has_companion_index(path, ".bai", ".csi");
+        if (!fi->indexed) {
+            file_info_add_warning(fi, "MISSING_INDEX", "warning",
+                "No .bai/.csi index file found alongside this BAM.");
+        }
     }
 
     sam_hdr_destroy(hdr);
@@ -601,12 +613,33 @@ static void inspect_vcf(const char *path, FileInfo *fi)
     for (int i = 0; i < nrec; i++) {
         bcf_hrec_t *h = hdr->hrec[i];
         if (!h || !h->key) continue;
-        if (strcmp(h->key, "reference") == 0 && h->value) {
-            free(fi->vcf_reference_in_header);
+        if (strcmp(h->key, "reference") == 0 && h->value &&
+            !fi->vcf_reference_in_header) {
             fi->vcf_reference_in_header = xstrdup(h->value);
-            break;
         }
     }
+
+    /* Use the parsed-contig list htslib maintains for us. */
+    int n_ctg = 0;
+    const char **ctg_names = bcf_hdr_seqnames(hdr, &n_ctg);
+    if (ctg_names && n_ctg > 0) {
+        fi->vcf_contigs = (SeqRef *)calloc((size_t)n_ctg, sizeof(SeqRef));
+        fi->n_vcf_contigs = n_ctg;
+        for (int i = 0; i < n_ctg; i++) {
+            fi->vcf_contigs[i].name = xstrdup(ctg_names[i]);
+            /* length lives under bcf_hdr_id2int/contig records; look it up */
+            bcf_idpair_t *ip = hdr->id[BCF_DT_CTG];
+            int64_t len = 0;
+            if (ip) {
+                int idx = bcf_hdr_name2id(hdr, ctg_names[i]);
+                if (idx >= 0 && idx < hdr->n[BCF_DT_CTG]) {
+                    len = (int64_t)hdr->id[BCF_DT_CTG][idx].val->info[0];
+                }
+            }
+            fi->vcf_contigs[i].length = len;
+        }
+    }
+    free(ctg_names);
 
     /* scan records */
     bcf1_t *rec = bcf_init();

@@ -203,6 +203,9 @@ void print_human(FILE *fp,
     }
 
     fprintf(fp, "\nWorkflow: %s\n", workflow_name(d->workflow));
+    if (d->advisory) {
+        fprintf(fp, "  %s\n", d->advisory);
+    }
 
     /* Cross-validation */
     int cv_ok = (cv->bam_reference_consistent && cv->bam_reference_matches_fasta &&
@@ -441,6 +444,7 @@ void print_json(FILE *fp, int indent,
     jw_kv_str (&w, "status", status);
     jw_kv_str (&w, "workflow", workflow_name(d->workflow));
     jw_kv_bool(&w, "ready_to_run", d->ready_to_run);
+    if (d->advisory) jw_kv_str(&w, "advisory", d->advisory);
 
     jw_key(&w, "files_provided"); jw_arr_open(&w);
     for (int i = 0; i < n_files; i++) file_info_to_json(&w, files[i]);

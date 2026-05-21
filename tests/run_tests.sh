@@ -251,7 +251,124 @@ t_loci_tsv() {
 }
 run "16. bam2bpp emits .loci.tsv with BED provenance for each passing locus" t_loci_tsv
 
-# ── Scenario 17: gvcf2bpp converter ────────────────────────────────────────
+# ── Spec-compliance and feature scenarios ──────────────────────────────────
+
+# Partial-BAM workflow: BAM + ref + Imap, no BED → missing bed_file entry
+t_needs_bed() {
+    local out
+    out=$("$bin" --json --dry-run \
+              "$data/ind1.bam" "$data/test_ref.fa" "$data/imap.txt" 2>/dev/null) || return 1
+    python3 - "$out" <<'PY'
+import json, sys
+d = json.loads(sys.argv[1])
+assert d["workflow"] == "bam2bpp_needs_bed", d["workflow"]
+items = [m["item"] for m in d["missing"]]
+assert "bed_file" in items, items
+PY
+}
+run "17. bam2bpp_needs_bed adds bed_file to missing[]" t_needs_bed
+
+# Partial-BAM workflow: BAM + BED + Imap, no ref → missing reference_fasta
+t_needs_ref() {
+    local out
+    out=$("$bin" --json --dry-run \
+              "$data/ind1.bam" "$data/loci.bed" "$data/imap.txt" 2>/dev/null) || return 1
+    python3 - "$out" <<'PY'
+import json, sys
+d = json.loads(sys.argv[1])
+assert d["workflow"] == "bam2bpp_needs_ref", d["workflow"]
+items = [m["item"] for m in d["missing"]]
+assert "reference_fasta" in items, items
+PY
+}
+run "18. bam2bpp_needs_ref adds reference_fasta to missing[]" t_needs_ref
+
+# --quiet really silences bam2bpp writer
+t_quiet() {
+    local err
+    err=$("$bin" --quiet --out "$tmp/q" \
+            "$data/ind1.bam" "$data/ind2.bam" "$data/ind3.bam" "$data/ind4.bam" \
+            "$data/test_ref.fa" "$data/loci.bed" "$data/imap.txt" 2>&1 >/dev/null)
+    ! echo "$err" | grep -q "Wrote BPP"
+}
+run "19. --quiet suppresses bam2bpp Wrote-* stderr lines" t_quiet
+
+# gVCF↔BED chrom mismatch is detected
+t_gvcf_chrom_mismatch() {
+    echo -e "chrZZZ\t0\t400\tlocus1" > "$tmp/wrong.bed"
+    "$bin" --dry-run "$data/tiny.g.vcf.gz" "$tmp/wrong.bed" "$data/imap.txt" 2>&1 | \
+        grep -qE 'CHROMOSOME_MISMATCH.*##contig'
+}
+run "20. gVCF↔BED chrom mismatch surfaces CHROMOSOME_MISMATCH" t_gvcf_chrom_mismatch
+
+# gvcf2bpp coverage-band fill: positions inside a NON_REF block are not all N
+t_gvcf_block_fill() {
+    "$bin" --quiet --keep-invariant --max-missing 1.0 --min-length 50 \
+        --out "$tmp/gv" \
+        "$data/tiny.g.vcf.gz" "$data/loci.bed" "$data/imap.txt" >/dev/null 2>&1 || return 1
+    # In locus1, the first NON_REF block is chr1:100-199 (REF=A). After fill,
+    # ind1 should have a run of A's, not all N's.
+    awk '/^4 / {lc++} lc==1 && /^\^ind1/ {print}' "$tmp/gv.txt" | grep -q 'AAAAAAAAAA'
+}
+run "21. gvcf2bpp fills non-variant coverage blocks across full span" t_gvcf_block_fill
+
+# gvcf2bpp --phasing split produces 2*n samples with _1/_2 ids
+t_gvcf_split() {
+    "$bin" --quiet --phasing split --keep-invariant --max-missing 1.0 \
+        --min-length 50 --out "$tmp/sp" \
+        "$data/tiny.g.vcf.gz" "$data/loci.bed" "$data/imap.txt" >/dev/null 2>&1 || return 1
+    # First locus header should report 8 sequences (4 samples * 2 haplotypes)
+    awk '/^[0-9]+ [0-9]+$/{print $1; exit}' "$tmp/sp.txt" | grep -q '^8$' && \
+    grep -q '^\^ind1_1' "$tmp/sp.txt" && grep -q '^\^ind1_2' "$tmp/sp.txt"
+}
+run "22. gvcf2bpp --phasing split emits 2 sequences per sample" t_gvcf_split
+
+# gvcf2bpp --phasing haploid keeps single sequence per sample
+t_gvcf_haploid() {
+    "$bin" --quiet --phasing haploid --keep-invariant --max-missing 1.0 \
+        --min-length 50 --out "$tmp/hp" \
+        "$data/tiny.g.vcf.gz" "$data/loci.bed" "$data/imap.txt" >/dev/null 2>&1 || return 1
+    awk '/^[0-9]+ [0-9]+$/{print $1; exit}' "$tmp/hp.txt" | grep -q '^4$'
+}
+run "23. gvcf2bpp --phasing haploid keeps one sequence per sample" t_gvcf_haploid
+
+# CRAM round-trips identically to BAM
+t_cram() {
+    [[ -f "$data/ind1.cram" ]] || return 0
+    "$bin" --quiet --out "$tmp/cr" \
+        "$data/ind1.cram" "$data/ind2.bam" "$data/ind3.bam" "$data/ind4.bam" \
+        "$data/test_ref.fa" "$data/loci.bed" "$data/imap.txt" >/dev/null 2>&1 || return 1
+    diff -q "$tmp/cr.txt" "$data/test_out.txt" >/dev/null
+}
+run "24. CRAM input round-trips byte-identical to BAM" t_cram
+
+# Workflow advisory for VCF-not-recommended
+t_vcf_advisory() {
+    # Re-use the gVCF fixture but trick the workflow by giving VCF (not gVCF).
+    # Easiest path: hand a VCF without coverage bands.
+    python3 -c "
+import gzip
+content = '''##fileformat=VCFv4.2
+##FORMAT=<ID=GT,Number=1,Type=String,Description=\"Genotype\">
+##contig=<ID=chr1,length=2500>
+#CHROM\tPOS\tID\tREF\tALT\tQUAL\tFILTER\tINFO\tFORMAT\tind1\tind2\tind3\tind4
+chr1\t200\t.\tA\tT\t100\t.\t.\tGT\t0/0\t0/1\t1/1\t0/0
+'''
+open('$tmp/plain.vcf','w').write(content)
+"
+    bgzip -f "$tmp/plain.vcf" && tabix -p vcf "$tmp/plain.vcf.gz" >/dev/null
+    local out
+    out=$("$bin" --json --dry-run "$tmp/plain.vcf.gz" "$data/loci.bed" 2>/dev/null) || return 1
+    python3 - "$out" <<'PY'
+import json, sys
+d = json.loads(sys.argv[1])
+assert d["workflow"] == "vcf_not_recommended", d["workflow"]
+assert "advisory" in d and "gVCF" in d["advisory"], d.get("advisory")
+PY
+}
+run "25. VCF (non-gVCF) workflow reports vcf_not_recommended + advisory" t_vcf_advisory
+
+# ── Scenario 26: gvcf2bpp converter ────────────────────────────────────────
 t9() {
     [[ -f "$data/tiny.g.vcf.gz" && -f "$data/tiny.g.vcf.gz.tbi" ]] || return 0  # skip if absent
     "$bin" --quiet --min-length 50 --keep-invariant --max-missing 1.0 \
@@ -259,7 +376,7 @@ t9() {
         "$data/tiny.g.vcf.gz" "$data/loci.bed" "$data/imap.txt" >/dev/null 2>&1 || return 1
     [[ -f "$tmp/gv.txt" ]]
 }
-run "17. gvcf2bpp converts tiny gVCF fixture" t9
+run "26. gvcf2bpp converts tiny gVCF fixture" t9
 
 # ── Summary ───────────────────────────────────────────────────────────────
 echo

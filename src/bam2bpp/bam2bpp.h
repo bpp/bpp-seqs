@@ -212,6 +212,10 @@ int count_snps(char **seqs, int n_seqs, int locus_len);
  * writer.c  –  output files
  * ---------------------------------------------------------------------- */
 
+/* When non-zero, the three writers suppress their "Wrote ..." stderr
+ * progress lines.  Set by bpp-seqs main.c when --quiet is on. */
+void bam2bpp_writer_set_quiet(int q);
+
 /*
  * Write the BPP sequence file (<prefix>.txt).
  * Format:

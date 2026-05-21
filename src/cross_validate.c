@@ -161,6 +161,27 @@ CrossValidation *cross_validate(FileInfo **files, int n)
         }
     }
 
+    /* 3b. BED chromosomes in VCF/gVCF ##contig list */
+    FileInfo *vcf = NULL;
+    for (int i = 0; i < n; i++) {
+        FileType t = files[i]->ft;
+        if ((t == BS_VCF || t == BS_GVCF) && files[i]->n_vcf_contigs > 0) {
+            vcf = files[i]; break;
+        }
+    }
+    if (bed && vcf) {
+        for (int i = 0; i < bed->n_chromosomes; i++) {
+            if (!seqref_has(vcf->vcf_contigs, vcf->n_vcf_contigs, bed->chromosomes[i])) {
+                cv->bed_chromosomes_in_bams = 0;  /* reuse the same flag */
+                char msg[512];
+                snprintf(msg, sizeof(msg),
+                    "BED chromosome '%s' not found in %s ##contig list.",
+                    bed->chromosomes[i], vcf->path);
+                add_issue(cv, "CHROMOSOME_MISMATCH", "error", bed->path, msg);
+            }
+        }
+    }
+
     /* 4. Sample-name reconciliation between sequence files and IMAP.
      * For BAM workflows we compare to BAM @RG SM; otherwise we compare
      * to sequence/sample names from MSA/PHYLIP/NEXUS/VCF. */

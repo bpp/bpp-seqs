@@ -23,6 +23,9 @@
 
 #include "bam2bpp.h"
 
+static int g_quiet = 0;
+void bam2bpp_writer_set_quiet(int q) { g_quiet = q; }
+
 /* Transform an internal sample-name like "ind1^1" into a BPP-safe
  * individual id ("ind1_1") so multiple haplotypes of the same sample
  * don't collide with haplotypes of other samples.  Caller must free. */
@@ -88,7 +91,7 @@ void write_bpp_file(const char *prefix,
     (void)n_seqs;  /* n_seqs is per-locus in the new format */
 
     fclose(fp);
-    fprintf(stderr, "Wrote BPP sequence file: %s\n", path);
+    if (!g_quiet) fprintf(stderr, "Wrote BPP sequence file: %s\n", path);
 }
 
 /* -------------------------------------------------------------------------
@@ -132,7 +135,7 @@ void write_imap_file(const char *prefix,
     }
 
     fclose(fp);
-    fprintf(stderr, "Wrote Imap file: %s\n", path);
+    if (!g_quiet) fprintf(stderr, "Wrote Imap file: %s\n", path);
 }
 
 /* -------------------------------------------------------------------------
@@ -164,5 +167,5 @@ void write_stats_file(const char *prefix, const LocusStat *stats, int n)
     }
 
     fclose(fp);
-    fprintf(stderr, "Wrote stats file: %s\n", path);
+    if (!g_quiet) fprintf(stderr, "Wrote stats file: %s\n", path);
 }

@@ -35,6 +35,11 @@ typedef struct {
     MissingItem  *missing;
     int           n_missing;
     int           ready_to_run;
+
+    /* Workflow-level advisory for diagnostic-only states (e.g.
+     * vcf_not_recommended, assembly_not_supported, needs_alignment_first).
+     * NULL when the workflow is actionable or unknown. */
+    char         *advisory;
 } WorkflowDecision;
 
 WorkflowDecision *workflow_decide(FileInfo **files, int n);

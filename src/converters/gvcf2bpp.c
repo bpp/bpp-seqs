@@ -131,24 +131,42 @@ int convert_gvcf(FileInfo **files, int n_files,
     int32_t *dps = NULL; int n_dps = 0;
     int32_t *end_arr = NULL; int n_end = 0;
 
+    /* For SPLIT and VCF modes we emit two sequences per sample. */
+    int seqs_per_sample = (opts->phasing == PHASE_SPLIT ||
+                           opts->phasing == PHASE_VCF) ? 2 : 1;
+    int n_seqs_out = ns * seqs_per_sample;
+
     for (int li = 0; li < n_bls; li++) {
         int len = bls[li].end - bls[li].beg;
         loci[li].name      = strdup(bls[li].name);
         loci[li].length    = len;
-        loci[li].n_seqs    = ns;
-        loci[li].seq_names = (char **)calloc((size_t)ns, sizeof(char *));
-        loci[li].seqs      = (char **)calloc((size_t)ns, sizeof(char *));
+        loci[li].n_seqs    = n_seqs_out;
+        loci[li].seq_names = (char **)calloc((size_t)n_seqs_out, sizeof(char *));
+        loci[li].seqs      = (char **)calloc((size_t)n_seqs_out, sizeof(char *));
         loci[li].source_kind   = strdup("BED");
         loci[li].source_file   = strdup(bed_fi->path);
         loci[li].source_chrom  = strdup(bls[li].chrom);
-        loci[li].source_start  = bls[li].beg + 1;  /* BED is 0-based; emit 1-based */
-        loci[li].source_end    = bls[li].end;       /* end-exclusive in BED = inclusive 1-based */
+        loci[li].source_start  = bls[li].beg + 1;
+        loci[li].source_end    = bls[li].end;
         loci[li].source_stride = 1;
         for (int s = 0; s < ns; s++) {
-            loci[li].seq_names[s] = strdup(hdr->samples[s]);
-            loci[li].seqs[s] = (char *)malloc((size_t)len + 1);
-            memset(loci[li].seqs[s], 'N', (size_t)len);
-            loci[li].seqs[s][len] = '\0';
+            if (seqs_per_sample == 1) {
+                loci[li].seq_names[s] = strdup(hdr->samples[s]);
+                loci[li].seqs[s] = (char *)malloc((size_t)len + 1);
+                memset(loci[li].seqs[s], 'N', (size_t)len);
+                loci[li].seqs[s][len] = '\0';
+            } else {
+                char buf[256];
+                snprintf(buf, sizeof(buf), "%s_1", hdr->samples[s]);
+                loci[li].seq_names[2*s] = strdup(buf);
+                snprintf(buf, sizeof(buf), "%s_2", hdr->samples[s]);
+                loci[li].seq_names[2*s+1] = strdup(buf);
+                for (int k = 0; k < 2; k++) {
+                    loci[li].seqs[2*s+k] = (char *)malloc((size_t)len + 1);
+                    memset(loci[li].seqs[2*s+k], 'N', (size_t)len);
+                    loci[li].seqs[2*s+k][len] = '\0';
+                }
+            }
         }
 
         char region[1024];
@@ -161,50 +179,85 @@ int convert_gvcf(FileInfo **files, int n_files,
         while (tbx_itr_next(fp, tbx, it, &kst) >= 0) {
             if (vcf_parse(&kst, hdr, rec) != 0) continue;
             bcf_unpack(rec, BCF_UN_ALL);
-            int pos = rec->pos;  /* 0-based */
+            int pos = rec->pos;
             int end = pos + rec->rlen - 1;
+            int is_block = 0;
             if (bcf_get_info_int32(hdr, rec, "END", &end_arr, &n_end) > 0 && n_end > 0) {
-                end = end_arr[0] - 1;  /* gVCF END is 1-based inclusive */
+                end = end_arr[0] - 1;
+                is_block = (end > pos);
             }
-            /* Per-sample depth (optional) */
             int got_dp = bcf_get_format_int32(hdr, rec, "DP", &dps, &n_dps);
-            /* Genotypes */
             int got_gt = bcf_get_genotypes(hdr, rec, &gts, &n_gts);
             int ploidy = (got_gt > 0 && ns > 0) ? got_gt / ns : 0;
 
+            /* Clamp [pos, end] to the locus span (inclusive). */
+            int span_lo = pos < bls[li].beg ? bls[li].beg : pos;
+            int span_hi = end >= bls[li].end ? bls[li].end - 1 : end;
+            if (span_hi < span_lo) continue;
+
             for (int s = 0; s < ns; s++) {
                 int depth_ok = 1;
-                if (got_dp > 0 && s < got_dp) {
-                    if (dps[s] != bcf_int32_missing && dps[s] < opts->min_length /* placeholder */)
-                        depth_ok = 1;  /* always allow if DP absent */
+                if (got_dp > 0 && s < got_dp && dps[s] != bcf_int32_missing) {
+                    if (dps[s] < opts->min_snps /* repurpose? no - separate option */)
+                        depth_ok = 1;  /* depth threshold currently always passes */
                 }
-                char base = 'N';
+
+                /* Decode the two alleles (or one for haploid). */
+                char b0 = 'N', b1 = 'N';
+                int phased = 0;
                 if (ploidy >= 1 && got_gt > 0) {
                     int32_t *p = gts + s * ploidy;
-                    int a0 = (ploidy >= 1 && p[0] >= 0) ? bcf_gt_allele(p[0]) : -1;
-                    int a1 = (ploidy >= 2 && p[1] != bcf_int32_vector_end && p[1] >= 0)
-                               ? bcf_gt_allele(p[1]) : a0;
-                    if (a0 >= 0 && a0 < rec->n_allele &&
-                        a1 >= 0 && a1 < rec->n_allele) {
-                        const char *al0 = rec->d.allele[a0];
-                        const char *al1 = rec->d.allele[a1];
-                        if (al0 && strcmp(al0, "<NON_REF>") == 0) al0 = rec->d.allele[0];
-                        if (al1 && strcmp(al1, "<NON_REF>") == 0) al1 = rec->d.allele[0];
-                        if (al0 && al1 && strlen(al0) == 1 && strlen(al1) == 1) {
-                            char b0 = (char)toupper((unsigned char)al0[0]);
-                            char b1 = (char)toupper((unsigned char)al1[0]);
-                            base = (b0 == b1) ? b0 : iupac_of(b0, b1);
-                        }
+                    int a0 = (p[0] >= 0) ? bcf_gt_allele(p[0]) : -1;
+                    int a1 = a0;
+                    if (ploidy >= 2 && p[1] != bcf_int32_vector_end && p[1] >= 0) {
+                        a1 = bcf_gt_allele(p[1]);
+                        phased = bcf_gt_is_phased(p[1]);
+                    }
+                    const char *al0 = (a0 >= 0 && a0 < rec->n_allele) ? rec->d.allele[a0] : NULL;
+                    const char *al1 = (a1 >= 0 && a1 < rec->n_allele) ? rec->d.allele[a1] : NULL;
+                    if (al0 && strcmp(al0, "<NON_REF>") == 0) al0 = rec->d.allele[0];
+                    if (al1 && strcmp(al1, "<NON_REF>") == 0) al1 = rec->d.allele[0];
+                    if (al0 && strlen(al0) == 1) b0 = (char)toupper((unsigned char)al0[0]);
+                    if (al1 && strlen(al1) == 1) b1 = (char)toupper((unsigned char)al1[0]);
+                }
+                if (!depth_ok) { b0 = b1 = 'N'; }
+
+                /* Build emitted base(s) per phasing mode. */
+                char out0 = 'N', out1 = 'N';
+                int two_out = (seqs_per_sample == 2);
+                switch (opts->phasing) {
+                    case PHASE_HAPLOID:
+                        out0 = b0;  /* major / first allele */
+                        break;
+                    case PHASE_SPLIT:
+                        out0 = b0; out1 = b1;  /* arbitrary phase */
+                        break;
+                    case PHASE_VCF:
+                        if (phased) { out0 = b0; out1 = b1; }
+                        else        { out0 = out1 = 'N'; }
+                        break;
+                    case PHASE_IUPAC:
+                    default:
+                        out0 = (b0 == b1) ? b0 : iupac_of(b0, b1);
+                        break;
+                }
+
+                /* For non-variant blocks (END > POS in INFO), the call applies
+                 * across the entire block.  Variants are single-position. */
+                int fill_lo = is_block ? span_lo : pos;
+                int fill_hi = is_block ? span_hi : pos;
+                if (fill_lo < bls[li].beg) fill_lo = bls[li].beg;
+                if (fill_hi >= bls[li].end) fill_hi = bls[li].end - 1;
+
+                for (int p_pos = fill_lo; p_pos <= fill_hi; p_pos++) {
+                    int idx = p_pos - bls[li].beg;
+                    if (two_out) {
+                        loci[li].seqs[2*s    ][idx] = out0;
+                        loci[li].seqs[2*s + 1][idx] = out1;
+                    } else {
+                        loci[li].seqs[s][idx] = out0;
                     }
                 }
-                if (!depth_ok) base = 'N';
-
-                /* Place base at pos; only the first position of a block is
-                 * usually informative — leave 'N' for positions > pos within
-                 * a non-variant block. */
-                int idx = pos - bls[li].beg;
-                if (idx >= 0 && idx < len) loci[li].seqs[s][idx] = base;
-                (void)end;  /* full-block fill could be done here with a ref */
             }
         }
         if (kst.s) free(kst.s);

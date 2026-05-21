@@ -96,6 +96,8 @@ typedef struct FileInfo {
     int       has_phase_info;
     double    phased_fraction;
     int       has_coverage_bands; /* GVCF only */
+    SeqRef   *vcf_contigs;        /* ##contig=&lt;ID=…,length=…&gt; */
+    int       n_vcf_contigs;
 
     /* BED */
     int       n_loci;
