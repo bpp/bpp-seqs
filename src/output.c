@@ -20,6 +20,7 @@ void conversion_result_free(ConversionResult *r)
     free(r->out_imap);
     free(r->out_stats);
     free(r->out_loci);
+    free(r->recommended_phase);
     for (int i = 0; i < r->n_loci; i++) {
         free(r->loci[i].name);
         free(r->loci[i].status);
@@ -278,6 +279,10 @@ void print_human(FILE *fp,
             cr->out_sequences, cr->n_loci_passed, cr->n_sequences);
         if (cr->out_imap)      fprintf(fp, "  %s  BPP Imap file\n", cr->out_imap);
         if (cr->out_stats)     fprintf(fp, "  %s  Per-locus statistics\n", cr->out_stats);
+        if (cr->recommended_phase) {
+            fprintf(fp, "\nRecommended BPP control-file line:\n"
+                        "  phase = %s\n", cr->recommended_phase);
+        }
     }
 }
 
@@ -513,6 +518,10 @@ void print_json(FILE *fp, int indent,
         jw_kv_str(&w, "stats",     cr->out_stats);
         jw_kv_str(&w, "loci",      cr->out_loci);
         jw_obj_close(&w);
+
+        if (cr->recommended_phase) {
+            jw_kv_str(&w, "recommended_phase", cr->recommended_phase);
+        }
 
         jw_key(&w, "summary"); jw_obj_open(&w);
         jw_kv_int(&w, "n_loci_input",  cr->n_loci_input);

@@ -29,10 +29,11 @@ echo "  windows generated:"
 wc -l < loci.bed
 head -3 loci.bed
 echo
-echo "=== step 2: bpp-seqs convert (bam2bpp) ==="
-"$BIN" --out result --quiet --keep-invariant --max-missing 0.9 \
+echo "=== step 2: bpp-seqs convert (bam2bpp, --phasing vcf) ==="
+"$BIN" --out result --keep-invariant --max-missing 0.9 \
+    --phasing vcf --phased-vcf phased.vcf.gz \
     HG00096.bam HG01595.bam NA19017.bam HG01112.bam \
-    GRCh38_chr22.fa loci.bed samples.imap 2>&1 | tail -10
+    GRCh38_chr22.fa loci.bed samples.imap 2>&1 | tail -25
 
 echo
 echo "=== output summary ==="

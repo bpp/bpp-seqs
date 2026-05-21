@@ -480,3 +480,87 @@ fail:
     free(bam_to_vcf);
     return -1;
 }
+
+/* ────────────────────────────────────────────────────────────────────────
+ * Whole-file phasing classification
+ * ───────────────────────────────────────────────────────────────────── */
+
+VcfPhaseSampleStat *vcf_phase_classify(VcfPhase     *vcf,
+                                       BamFile     **bams,
+                                       int           n_bams,
+                                       const Locus  *loci,
+                                       int           n_loci)
+{
+    if (!vcf || !bams || n_bams <= 0) return NULL;
+
+    VcfPhaseSampleStat *stats =
+        (VcfPhaseSampleStat *)calloc((size_t)n_bams, sizeof(VcfPhaseSampleStat));
+    if (!stats) return NULL;
+
+    int *bam_to_vcf = (int *)malloc((size_t)n_bams * sizeof(int));
+    int  n_vcf_samples = bcf_hdr_nsamples(vcf->hdr);
+    for (int i = 0; i < n_bams; i++) {
+        stats[i].sample = strdup(bams[i]->sample);
+        bam_to_vcf[i] = -1;
+        for (int j = 0; j < n_vcf_samples; j++) {
+            if (strcmp(vcf->hdr->samples[j], bams[i]->sample) == 0) {
+                bam_to_vcf[i] = j;
+                break;
+            }
+        }
+        if (bam_to_vcf[i] < 0) stats[i].not_in_vcf = 1;
+    }
+
+    bcf1_t  *rec     = bcf_init();
+    int32_t *gt_arr  = NULL;
+    int      ngt_arr = 0;
+    char     region[1024];
+
+    for (int li = 0; li < n_loci; li++) {
+        snprintf(region, sizeof(region),
+                 "%s:%" PRId32 "-%" PRId32,
+                 loci[li].chrom, loci[li].start + 1, loci[li].end);
+        hts_itr_t *itr = bcf_itr_querys(vcf->idx, vcf->hdr, region);
+        if (!itr) continue;
+
+        while (bcf_itr_next(vcf->fp, itr, rec) >= 0) {
+            bcf_unpack(rec, BCF_UN_ALL);
+            if (rec->n_allele < 2) continue;
+
+            int ngt = bcf_get_genotypes(vcf->hdr, rec, &gt_arr, &ngt_arr);
+            if (ngt <= 0) continue;
+            int ploidy = (n_vcf_samples > 0) ? ngt / n_vcf_samples : 2;
+            if (ploidy < 2) continue;
+
+            for (int bi = 0; bi < n_bams; bi++) {
+                int vi = bam_to_vcf[bi];
+                if (vi < 0) continue;
+                int32_t gt0 = gt_arr[vi * ploidy];
+                int32_t gt1 = gt_arr[vi * ploidy + 1];
+                if (bcf_gt_is_missing(gt0) || bcf_gt_is_missing(gt1) ||
+                    gt0 == bcf_int32_vector_end || gt1 == bcf_int32_vector_end) {
+                    continue;
+                }
+                int a0 = bcf_gt_allele(gt0);
+                int a1 = bcf_gt_allele(gt1);
+                if (a0 == a1) continue;  /* only count heterozygous calls */
+                stats[bi].n_het++;
+                if (bcf_gt_is_phased(gt1)) stats[bi].n_phased++;
+                else                       stats[bi].n_unphased++;
+            }
+        }
+        hts_itr_destroy(itr);
+    }
+
+    free(gt_arr);
+    bcf_destroy(rec);
+    free(bam_to_vcf);
+    return stats;
+}
+
+void vcf_phase_stats_free(VcfPhaseSampleStat *s, int n)
+{
+    if (!s) return;
+    for (int i = 0; i < n; i++) free(s[i].sample);
+    free(s);
+}

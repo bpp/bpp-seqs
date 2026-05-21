@@ -29,6 +29,22 @@ Produced by the pipeline:
 ## Running
 
 ```bash
-./tests/realdata/setup.sh    # downloads ~5 MB, takes ~1 min
+./tests/realdata/setup.sh    # downloads ~5 MB BAMs + ~50 MB chr22 ref
 ./tests/realdata/run.sh      # runs windows + bam2bpp pipeline
 ```
+
+## Validating the output with BPP itself
+
+If a BPP binary is available, the generated `result.txt` / `result.imap`
+can be fed straight into a short MCMC run:
+
+```bash
+cd tests/realdata
+~/repos/bpp/src/bpp --cfile bpp.ctl
+```
+
+`bpp.ctl` defines a 4-population, A00 (parameter estimation only) analysis
+with a topology `(AFR,((EUR,AMR),EAS))` and a 200-burnin / 200-sample MCMC.
+On the fixture this runs in well under one second and produces sensible
+θ estimates (AFR highest, AMR lowest — matching the known out-of-Africa
+diversity pattern and the founder-effect bottleneck in the Americas).

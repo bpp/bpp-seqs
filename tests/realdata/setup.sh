@@ -46,7 +46,17 @@ for entry in "${SAMPLES[@]}"; do
     rm -f "$out.tmp"
 done
 
-# 3) Imap (sample -> super-population for population structure).
+# 3) Phased VCF slice (NYGC phased panel, GRCh38, chr22).
+#    Lets us exercise --phasing vcf instead of pileup-derived IUPAC.
+if [[ ! -s phased.vcf.gz ]]; then
+    echo "  fetching phased VCF slice ..."
+    PHASED_URL="https://ftp.1000genomes.ebi.ac.uk/vol1/ftp/data_collections/1000G_2504_high_coverage/working/20220422_3202_phased_SNV_INDEL_SV/1kGP_high_coverage_Illumina.chr22.filtered.SNV_INDEL_SV_phased_panel.vcf.gz"
+    bcftools view -O z -r "$REGION" -s HG00096,HG01595,NA19017,HG01112 \
+        "$PHASED_URL" > phased.vcf.gz
+    tabix -p vcf phased.vcf.gz
+fi
+
+# 4) Imap (sample -> super-population for population structure).
 cat > samples.imap <<'EOF'
 HG00096	EUR
 HG01595	EAS

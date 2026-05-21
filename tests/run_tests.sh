@@ -523,7 +523,37 @@ t_win_pipeline() {
 }
 run "40. windows + bam2bpp pipeline produces valid BPP output" t_win_pipeline
 
-# ── Scenario 41: gvcf2bpp converter ────────────────────────────────────────
+# ── Scenarios 41–42: phase recommendation ────────────────────────────────
+
+t_phase_recommend_iupac() {
+    local out
+    out=$("$bin" --json --quiet --out "$tmp/pr" \
+            "$data/ind1.bam" "$data/ind2.bam" "$data/ind3.bam" "$data/ind4.bam" \
+            "$data/test_ref.fa" "$data/loci.bed" "$data/imap.txt" 2>/dev/null) || return 1
+    python3 - "$out" <<'PY'
+import json, sys
+d = json.loads(sys.argv[1])
+# Default phasing is IUPAC → recommend "1 1" (one digit per Imap species)
+assert d.get("recommended_phase") == "1 1", d.get("recommended_phase")
+PY
+}
+run "41. recommended_phase = '1 1' under default IUPAC phasing" t_phase_recommend_iupac
+
+t_phase_recommend_split() {
+    local out
+    out=$("$bin" --json --quiet --phasing split --out "$tmp/ps" \
+            "$data/ind1.bam" "$data/ind2.bam" "$data/ind3.bam" "$data/ind4.bam" \
+            "$data/test_ref.fa" "$data/loci.bed" "$data/imap.txt" 2>/dev/null) || return 1
+    python3 - "$out" <<'PY'
+import json, sys
+d = json.loads(sys.argv[1])
+# Split phasing emits 2 sequences per sample → BPP should NOT re-phase
+assert d.get("recommended_phase") == "0 0", d.get("recommended_phase")
+PY
+}
+run "42. recommended_phase = '0 0' under --phasing split" t_phase_recommend_split
+
+# ── Scenario 43: gvcf2bpp converter ────────────────────────────────────────
 t9() {
     [[ -f "$data/tiny.g.vcf.gz" && -f "$data/tiny.g.vcf.gz.tbi" ]] || return 0  # skip if absent
     "$bin" --quiet --min-length 50 --keep-invariant --max-missing 1.0 \
@@ -531,7 +561,7 @@ t9() {
         "$data/tiny.g.vcf.gz" "$data/loci.bed" "$data/imap.txt" >/dev/null 2>&1 || return 1
     [[ -f "$tmp/gv.txt" ]]
 }
-run "41. gvcf2bpp converts tiny gVCF fixture" t9
+run "43. gvcf2bpp converts tiny gVCF fixture" t9
 
 # ── Summary ───────────────────────────────────────────────────────────────
 echo

@@ -72,4 +72,34 @@ int process_locus_vcf(BamFile       **bams,
                       LocusResult    *result,
                       double         *mean_dp_out);
 
+/* ────────────────────────────────────────────────────────────────────────
+ * Whole-file phasing classification.
+ *
+ * Used before the per-locus loop in --phasing vcf mode to decide whether
+ * the VCF actually carries phase information for the requested samples.
+ * The policy is whole-file: if any relevant sample has any unphased het
+ * GT within the locus set, we degrade to IUPAC.
+ *
+ * Returns a malloc'd array of per-sample counts indexed against the
+ * BAM order (NOT the VCF order).  Samples not found in the VCF have all
+ * counts set to 0 and `not_in_vcf = 1`.
+ * ───────────────────────────────────────────────────────────────────── */
+typedef struct {
+    char  *sample;          /* matches bams[i]->sample */
+    int    not_in_vcf;      /* 1 if no column with this name in VCF */
+    int    n_het;           /* total heterozygous GTs observed */
+    int    n_phased;        /* of those, how many were phased ('|') */
+    int    n_unphased;      /* of those, how many were unphased ('/') */
+} VcfPhaseSampleStat;
+
+/* Scan the VCF over the given BED loci and classify each sample listed
+ * in `bams` by its phasing pattern.  Returns NULL on error. */
+VcfPhaseSampleStat *vcf_phase_classify(VcfPhase     *vcf,
+                                       BamFile     **bams,
+                                       int           n_bams,
+                                       const Locus  *loci,
+                                       int           n_loci);
+
+void vcf_phase_stats_free(VcfPhaseSampleStat *s, int n);
+
 #endif /* VCF_PHASE_H */

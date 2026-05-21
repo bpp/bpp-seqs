@@ -309,6 +309,53 @@ static int run_bam2bpp(const CLI *c, FileInfo **files, int n_files,
     if (a.phasing == PHASE_VCF) {
         vcf = open_vcf_phase(a.phased_vcf);
         if (!vcf) { close_bams(bams, a.n_bams); fai_destroy(fai); goto fail; }
+
+        /* Whole-file phasing policy: scan the VCF up front and see if every
+         * BAM-relevant sample has fully phased heterozygous GTs.  If any
+         * sample has any unphased het, degrade to PHASE_IUPAC and warn. */
+        VcfPhaseSampleStat *ps = vcf_phase_classify(vcf, bams, a.n_bams,
+                                                    loci, n_loci);
+        int any_unphased = 0;
+        int any_missing  = 0;
+        int total_unphased = 0;
+        for (int i = 0; i < a.n_bams; i++) {
+            if (ps[i].not_in_vcf)         any_missing++;
+            if (ps[i].n_unphased > 0)     { any_unphased = 1;
+                                            total_unphased += ps[i].n_unphased; }
+        }
+        if (any_unphased || any_missing) {
+            if (!c->quiet) {
+                fprintf(stderr,
+                    "WARNING: phased-VCF check found %d unphased het GT%s "
+                    "across %d sample%s; %d sample%s missing from the VCF.\n",
+                    total_unphased, total_unphased == 1 ? "" : "s",
+                    a.n_bams, a.n_bams == 1 ? "" : "s",
+                    any_missing, any_missing == 1 ? "" : "s");
+                for (int i = 0; i < a.n_bams; i++) {
+                    if (ps[i].not_in_vcf) {
+                        fprintf(stderr, "         %-15s NOT in VCF\n", ps[i].sample);
+                    } else if (ps[i].n_unphased > 0) {
+                        double frac = ps[i].n_het ?
+                            100.0 * ps[i].n_unphased / ps[i].n_het : 0.0;
+                        fprintf(stderr,
+                            "         %-15s %d/%d unphased (%.1f%%)\n",
+                            ps[i].sample, ps[i].n_unphased, ps[i].n_het, frac);
+                    }
+                }
+                fprintf(stderr,
+                    "         Falling back to IUPAC encoding; the BPP control "
+                    "file should use `phase = 1 ...` for all species.\n");
+            }
+            a.phasing = PHASE_IUPAC;
+            close_vcf_phase(vcf);
+            vcf = NULL;
+        } else if (!c->quiet) {
+            fprintf(stderr,
+                "  --phasing vcf: all %d sample%s fully phased; "
+                "emitting 2 haplotypes per individual.\n",
+                a.n_bams, a.n_bams == 1 ? "" : "s");
+        }
+        vcf_phase_stats_free(ps, a.n_bams);
     }
 
     bam2bpp_writer_set_quiet(c->quiet);
@@ -373,6 +420,19 @@ static int run_bam2bpp(const CLI *c, FileInfo **files, int n_files,
             free_locus_result(&result); continue;
         }
 
+        /* For SPLIT/VCF phasing, internal seq_names use '<sample>^<n>' to
+         * mark haplotypes.  The bam2bpp writer later transforms '^' to '_'
+         * so the per-locus BPP ids are unique across samples.  Apply the
+         * same transform here so the sanity check sees the same ids the
+         * writer will emit (otherwise it would flag every locus as having
+         * duplicate id '1' / '2'). */
+        if (a.phasing == PHASE_SPLIT || a.phasing == PHASE_VCF) {
+            for (int s = 0; s < result.n_seqs; s++) {
+                for (char *p = result.seq_names[s]; *p; p++)
+                    if (*p == '^') *p = '_';
+            }
+        }
+
         /* Structural sanity check (lengths, ids, char set) just before
          * accepting this locus for output. */
         {
@@ -414,11 +474,11 @@ static int run_bam2bpp(const CLI *c, FileInfo **files, int n_files,
             for (int j = 0; j < results[i].n_seqs; j++) {
                 char *id = sanity_individual_id(results[i].seq_names[j]);
                 if (!id) continue;
-                /* For SPLIT phasing, seq_names are like "ind1^1"; the
-                 * post-caret id "1" won't match the Imap. Use the full
+                /* For SPLIT and VCF phasing, seq_names are like "ind1^1";
+                 * the post-caret id "1" won't match the Imap. Use the full
                  * sample name in that case, transformed to "ind1_1" to
                  * mirror the writer. */
-                if (a.phasing == PHASE_SPLIT) {
+                if (a.phasing == PHASE_SPLIT || a.phasing == PHASE_VCF) {
                     free(id);
                     const char *raw = results[i].seq_names[j];
                     id = strdup(raw);
@@ -468,6 +528,39 @@ static int run_bam2bpp(const CLI *c, FileInfo **files, int n_files,
     cr->n_high_missing      = n_high_missing;
     cr->n_insufficient_snps = n_insufficient_snps;
     cr->has_results         = 1;
+
+    /* Recommended `phase = ...` line — one digit per Imap species.
+     *   PHASE_VCF   → 0 (data already phased; BPP must not re-phase)
+     *   PHASE_SPLIT → 0 (two arbitrary-phase sequences per sample)
+     *   PHASE_HAPLOID → 0 (one allele per sample, no phasing needed)
+     *   PHASE_IUPAC → 1 (each IUPAC het = unphased het, BPP must phase)
+     */
+    {
+        /* count distinct populations in the Imap */
+        int n_species = 0;
+        char **seen = NULL;
+        for (int i = 0; i < n_imap; i++) {
+            int dup = 0;
+            for (int j = 0; j < n_species; j++)
+                if (strcmp(seen[j], imap[i].population) == 0) { dup = 1; break; }
+            if (!dup) {
+                seen = realloc(seen, sizeof(char *) * (size_t)(n_species + 1));
+                seen[n_species++] = imap[i].population;
+            }
+        }
+        if (n_species > 0) {
+            int flag = (a.phasing == PHASE_IUPAC) ? 1 : 0;
+            size_t cap = (size_t)n_species * 2 + 1;
+            char *buf = (char *)malloc(cap);
+            int off = 0;
+            for (int i = 0; i < n_species; i++) {
+                off += snprintf(buf + off, cap - (size_t)off,
+                                "%s%d", i ? " " : "", flag);
+            }
+            cr->recommended_phase = buf;
+        }
+        free(seen);
+    }
     for (int li = 0; li < n_loci; li++) {
         const char *status = stats[li].skip_reason ? "failed" : "passed";
         conversion_result_add_locus(cr,

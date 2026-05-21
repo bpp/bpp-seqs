@@ -40,7 +40,8 @@ typedef struct {
         int   source_stride;
     } *loci;
     int n_loci;
-    char *out_loci;            /* path to <prefix>.loci.tsv */
+    char *out_loci;              /* path to <prefix>.loci.tsv */
+    char *recommended_phase;     /* e.g. "0 0 0 0" or "1 1 1 1", one per imap species */
 } ConversionResult;
 
 void conversion_result_init(ConversionResult *r);

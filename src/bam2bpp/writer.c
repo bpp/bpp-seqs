@@ -125,7 +125,7 @@ void write_imap_file(const char *prefix,
             pop = "unknown";
         }
 
-        if (phasing == PHASE_SPLIT) {
+        if (phasing == PHASE_SPLIT || phasing == PHASE_VCF) {
             /* Two unique ids per individual: <sample>_1 and <sample>_2. */
             fprintf(fp, "%s_1\t%s\n", bams[i]->sample, pop);
             fprintf(fp, "%s_2\t%s\n", bams[i]->sample, pop);
