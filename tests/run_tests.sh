@@ -238,7 +238,20 @@ EOF
 }
 run "15. NEXUS excess characters beyond declared nchar trigger warning" t_nex_excess_chars
 
-# ── Scenario 16: gvcf2bpp converter ────────────────────────────────────────
+# ── Scenario 16: per-locus provenance file (.loci.tsv) ─────────────────────
+t_loci_tsv() {
+    "$bin" --quiet --out "$tmp/lt" \
+        "$data/ind1.bam" "$data/ind2.bam" "$data/ind3.bam" "$data/ind4.bam" \
+        "$data/test_ref.fa" "$data/loci.bed" "$data/imap.txt" >/dev/null 2>&1 || return 1
+    [[ -f "$tmp/lt.loci.tsv" ]] || return 1
+    # Header line
+    head -1 "$tmp/lt.loci.tsv" | grep -q '^locus_name	source_kind	source_file	source_chrom	source_start	source_end	source_stride	length	n_seqs$' || return 1
+    # One data row per passing locus, BED provenance
+    [[ $(awk 'NR>1 && $2=="BED" && $4=="chr1"' "$tmp/lt.loci.tsv" | wc -l) -eq 4 ]]
+}
+run "16. bam2bpp emits .loci.tsv with BED provenance for each passing locus" t_loci_tsv
+
+# ── Scenario 17: gvcf2bpp converter ────────────────────────────────────────
 t9() {
     [[ -f "$data/tiny.g.vcf.gz" && -f "$data/tiny.g.vcf.gz.tbi" ]] || return 0  # skip if absent
     "$bin" --quiet --min-length 50 --keep-invariant --max-missing 1.0 \
@@ -246,7 +259,7 @@ t9() {
         "$data/tiny.g.vcf.gz" "$data/loci.bed" "$data/imap.txt" >/dev/null 2>&1 || return 1
     [[ -f "$tmp/gv.txt" ]]
 }
-run "16. gvcf2bpp converts tiny gVCF fixture" t9
+run "17. gvcf2bpp converts tiny gVCF fixture" t9
 
 # ── Summary ───────────────────────────────────────────────────────────────
 echo

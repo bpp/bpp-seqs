@@ -185,6 +185,12 @@ static int parse_one_locus(gzFile gz, char *carry_line, size_t carry_cap,
     out->n_seqs    = nseq;
     out->seq_names = names;
     out->seqs      = seqs;
+    out->source_kind   = strdup("PHYLIP");
+    out->source_file   = NULL;   /* set by caller (knows the path) */
+    out->source_chrom  = NULL;
+    out->source_start  = -1;
+    out->source_end    = -1;
+    out->source_stride = 1;
     return 0;
 }
 
@@ -256,7 +262,10 @@ int convert_phylip(FileInfo **files, int n_files,
             }
         }
         all = (LocusAln *)realloc(all, sizeof(LocusAln) * (size_t)(n_all + nc));
-        for (int j = 0; j < nc; j++) all[n_all + j] = chunk[j];
+        for (int j = 0; j < nc; j++) {
+            all[n_all + j] = chunk[j];
+            all[n_all + j].source_file = strdup(files[i]->path);
+        }
         n_all += nc;
         idx += nc;
         free(chunk);

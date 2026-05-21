@@ -15,6 +15,32 @@ static char *xdup(const char *s)
     return r;
 }
 
+int write_loci_tsv(const char *out_prefix, const LocusProv *items, int n)
+{
+    char path[1024];
+    snprintf(path, sizeof(path), "%s.loci.tsv", out_prefix);
+    FILE *f = fopen(path, "w");
+    if (!f) return -1;
+    fprintf(f, "locus_name\tsource_kind\tsource_file\tsource_chrom\t"
+               "source_start\tsource_end\tsource_stride\tlength\tn_seqs\n");
+    for (int i = 0; i < n; i++) {
+        const LocusProv *it = &items[i];
+        fprintf(f, "%s\t%s\t%s\t%s\t",
+                it->name  ? it->name  : ".",
+                it->kind  ? it->kind  : ".",
+                it->file  ? it->file  : ".",
+                it->chrom ? it->chrom : ".");
+        if (it->start > 0) fprintf(f, "%d\t", it->start); else fprintf(f, ".\t");
+        if (it->end   > 0) fprintf(f, "%d\t", it->end);   else fprintf(f, ".\t");
+        fprintf(f, "%d\t%d\t%d\n",
+                it->stride > 0 ? it->stride : 1,
+                it->length,
+                it->n_seqs);
+    }
+    fclose(f);
+    return 0;
+}
+
 int write_alignment_outputs(const char *out_prefix,
                             LocusAln *loci, int n_loci,
                             FileInfo *imap_fi,
@@ -168,9 +194,51 @@ int write_alignment_outputs(const char *out_prefix,
         free(ids);
     }
 
+    /* Write per-locus provenance for every passing locus. */
+    {
+        LocusProv *items = (LocusProv *)calloc((size_t)n_pass, sizeof(LocusProv));
+        int k = 0;
+        for (int i = 0; i < n_loci; i++) {
+            if (!passes[i]) continue;
+            items[k].name   = loci[i].name;
+            items[k].kind   = loci[i].source_kind   ? loci[i].source_kind   : ".";
+            items[k].file   = loci[i].source_file   ? loci[i].source_file   : ".";
+            items[k].chrom  = loci[i].source_chrom  ? loci[i].source_chrom  : ".";
+            items[k].start  = loci[i].source_start;
+            items[k].end    = loci[i].source_end;
+            items[k].stride = loci[i].source_stride > 0 ? loci[i].source_stride : 1;
+            items[k].length = loci[i].length;
+            items[k].n_seqs = loci[i].n_seqs;
+            k++;
+        }
+        if (write_loci_tsv(out_prefix, items, n_pass) == 0) {
+            snprintf(path, sizeof(path), "%s.loci.tsv", out_prefix);
+            cr->out_loci = xdup(path);
+        }
+        free(items);
+    }
+
+    /* Mirror provenance into the ConversionResult.loci entries (in the
+     * same order they were added above), so the JSON output carries the
+     * same fields the .loci.tsv has. */
+    for (int i = 0; i < cr->n_loci && i < n_loci; i++) {
+        free(cr->loci[i].source_kind);
+        free(cr->loci[i].source_file);
+        free(cr->loci[i].source_chrom);
+        cr->loci[i].source_kind   = loci[i].source_kind  ? strdup(loci[i].source_kind)  : NULL;
+        cr->loci[i].source_file   = loci[i].source_file  ? strdup(loci[i].source_file)  : NULL;
+        cr->loci[i].source_chrom  = loci[i].source_chrom ? strdup(loci[i].source_chrom) : NULL;
+        cr->loci[i].source_start  = loci[i].source_start;
+        cr->loci[i].source_end    = loci[i].source_end;
+        cr->loci[i].source_stride = loci[i].source_stride > 0 ? loci[i].source_stride : 1;
+    }
+
     /* Free input loci */
     for (int i = 0; i < n_loci; i++) {
         free(loci[i].name);
+        free(loci[i].source_kind);
+        free(loci[i].source_file);
+        free(loci[i].source_chrom);
         for (int j = 0; j < loci[i].n_seqs; j++) {
             free(loci[i].seq_names[j]);
             free(loci[i].seqs[j]);

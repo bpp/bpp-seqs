@@ -18,6 +18,7 @@
 #include "output.h"
 #include "sanity.h"
 #include "converters/converters.h"
+#include "converters/aln_writer.h"
 #include "bam2bpp/bam2bpp.h"
 #include "bam2bpp/vcf_phase.h"
 
@@ -469,6 +470,34 @@ static int run_bam2bpp(const CLI *c, FileInfo **files, int n_files,
             stats[li].locus_name, stats[li].locus_len, stats[li].n_snps,
             stats[li].missing_frac, stats[li].mean_depth,
             status, human_skip_reason(stats[li].skip_reason));
+        conversion_result_set_locus_source(cr,
+            "BED", a.bed_path, loci[li].chrom,
+            loci[li].start + 1, loci[li].end, 1);
+    }
+
+    /* Write <prefix>.loci.tsv for the bam2bpp path (passing loci only). */
+    {
+        LocusProv *items = (LocusProv *)calloc((size_t)n_results, sizeof(LocusProv));
+        int k = 0;
+        for (int li = 0; li < n_loci && k < n_results; li++) {
+            if (stats[li].skip_reason) continue;
+            items[k].name   = loci[li].name;
+            items[k].kind   = "BED";
+            items[k].file   = a.bed_path;
+            items[k].chrom  = loci[li].chrom;
+            items[k].start  = loci[li].start + 1;
+            items[k].end    = loci[li].end;
+            items[k].stride = 1;
+            items[k].length = (int)(loci[li].end - loci[li].start);
+            items[k].n_seqs = n_seqs;
+            k++;
+        }
+        if (write_loci_tsv(a.out_prefix, items, n_results) == 0) {
+            char p[1024];
+            snprintf(p, sizeof(p), "%s.loci.tsv", a.out_prefix);
+            cr->out_loci = strdup(p);
+        }
+        free(items);
     }
 
     /* Cleanup */

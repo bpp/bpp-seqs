@@ -181,6 +181,12 @@ int convert_nexus(FileInfo **files, int n_files,
         loci[0].n_seqs = ntax;
         loci[0].seq_names = names;
         loci[0].seqs      = seqs;
+        loci[0].source_kind   = strdup("CHARSET");
+        loci[0].source_file   = strdup(nx->path);
+        loci[0].source_chrom  = NULL;
+        loci[0].source_start  = 1;
+        loci[0].source_end    = nchar;
+        loci[0].source_stride = 1;
     } else {
         for (int c = 0; c < nx->nexus_n_charset_names; c++) {
             int s = nx->nexus_charset_starts[c];   /* 1-based inclusive */
@@ -195,6 +201,12 @@ int convert_nexus(FileInfo **files, int n_files,
             loci[c].n_seqs = ntax;
             loci[c].seq_names = (char **)calloc((size_t)ntax, sizeof(char *));
             loci[c].seqs      = (char **)calloc((size_t)ntax, sizeof(char *));
+            loci[c].source_kind   = strdup("CHARSET");
+            loci[c].source_file   = strdup(nx->path);
+            loci[c].source_chrom  = NULL;
+            loci[c].source_start  = s;
+            loci[c].source_end    = e;
+            loci[c].source_stride = st;
             for (int t = 0; t < ntax; t++) {
                 loci[c].seq_names[t] = strdup(names[t]);
                 loci[c].seqs[t]      = (char *)malloc((size_t)len + 1);

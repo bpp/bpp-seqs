@@ -19,10 +19,14 @@ void conversion_result_free(ConversionResult *r)
     free(r->out_sequences);
     free(r->out_imap);
     free(r->out_stats);
+    free(r->out_loci);
     for (int i = 0; i < r->n_loci; i++) {
         free(r->loci[i].name);
         free(r->loci[i].status);
         free(r->loci[i].skip_reason);
+        free(r->loci[i].source_kind);
+        free(r->loci[i].source_file);
+        free(r->loci[i].source_chrom);
     }
     free(r->loci);
     memset(r, 0, sizeof(*r));
@@ -51,7 +55,34 @@ void conversion_result_add_locus(ConversionResult *r,
     r->loci[r->n_loci].mean_depth       = mean_depth;
     r->loci[r->n_loci].status           = xstrdup_local(status);
     r->loci[r->n_loci].skip_reason      = xstrdup_local(skip_reason);
+    r->loci[r->n_loci].source_kind      = NULL;
+    r->loci[r->n_loci].source_file      = NULL;
+    r->loci[r->n_loci].source_chrom     = NULL;
+    r->loci[r->n_loci].source_start     = -1;
+    r->loci[r->n_loci].source_end       = -1;
+    r->loci[r->n_loci].source_stride    = 1;
     r->n_loci++;
+}
+
+void conversion_result_set_locus_source(ConversionResult *r,
+                                        const char *source_kind,
+                                        const char *source_file,
+                                        const char *source_chrom,
+                                        int source_start,
+                                        int source_end,
+                                        int source_stride)
+{
+    if (r->n_loci == 0) return;
+    int i = r->n_loci - 1;
+    free(r->loci[i].source_kind);
+    free(r->loci[i].source_file);
+    free(r->loci[i].source_chrom);
+    r->loci[i].source_kind   = xstrdup_local(source_kind);
+    r->loci[i].source_file   = xstrdup_local(source_file);
+    r->loci[i].source_chrom  = xstrdup_local(source_chrom);
+    r->loci[i].source_start  = source_start;
+    r->loci[i].source_end    = source_end;
+    r->loci[i].source_stride = source_stride > 0 ? source_stride : 1;
 }
 
 const char *status_string(const WorkflowDecision *d, int conversion_done, int error)
@@ -476,6 +507,7 @@ void print_json(FILE *fp, int indent,
         jw_kv_str(&w, "sequences", cr->out_sequences);
         jw_kv_str(&w, "imap",      cr->out_imap);
         jw_kv_str(&w, "stats",     cr->out_stats);
+        jw_kv_str(&w, "loci",      cr->out_loci);
         jw_obj_close(&w);
 
         jw_key(&w, "summary"); jw_obj_open(&w);
@@ -500,6 +532,14 @@ void print_json(FILE *fp, int indent,
             jw_kv_dbl(&w, "mean_depth",       cr->loci[i].mean_depth);
             jw_kv_str(&w, "status",           cr->loci[i].status);
             jw_kv_str(&w, "skip_reason",      cr->loci[i].skip_reason);
+            jw_kv_str(&w, "source_kind",      cr->loci[i].source_kind);
+            jw_kv_str(&w, "source_file",      cr->loci[i].source_file);
+            jw_kv_str(&w, "source_chrom",     cr->loci[i].source_chrom);
+            if (cr->loci[i].source_start > 0) jw_kv_int(&w, "source_start", cr->loci[i].source_start);
+            else jw_kv_null(&w, "source_start");
+            if (cr->loci[i].source_end > 0)   jw_kv_int(&w, "source_end",   cr->loci[i].source_end);
+            else jw_kv_null(&w, "source_end");
+            jw_kv_int(&w, "source_stride",    cr->loci[i].source_stride);
             jw_obj_close(&w);
         }
         jw_arr_close(&w);

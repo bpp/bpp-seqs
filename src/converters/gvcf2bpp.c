@@ -138,6 +138,12 @@ int convert_gvcf(FileInfo **files, int n_files,
         loci[li].n_seqs    = ns;
         loci[li].seq_names = (char **)calloc((size_t)ns, sizeof(char *));
         loci[li].seqs      = (char **)calloc((size_t)ns, sizeof(char *));
+        loci[li].source_kind   = strdup("BED");
+        loci[li].source_file   = strdup(bed_fi->path);
+        loci[li].source_chrom  = strdup(bls[li].chrom);
+        loci[li].source_start  = bls[li].beg + 1;  /* BED is 0-based; emit 1-based */
+        loci[li].source_end    = bls[li].end;       /* end-exclusive in BED = inclusive 1-based */
+        loci[li].source_stride = 1;
         for (int s = 0; s < ns; s++) {
             loci[li].seq_names[s] = strdup(hdr->samples[s]);
             loci[li].seqs[s] = (char *)malloc((size_t)len + 1);

@@ -122,6 +122,12 @@ int convert_fasta_msa(FileInfo **files, int n_files,
         loci[i].n_seqs    = n;
         loci[i].seq_names = names;
         loci[i].seqs      = seqs;
+        loci[i].source_kind   = strdup("MSA");
+        loci[i].source_file   = strdup(msas[i]->path);
+        loci[i].source_chrom  = NULL;
+        loci[i].source_start  = -1;
+        loci[i].source_end    = -1;
+        loci[i].source_stride = 1;
     }
 
     return write_alignment_outputs(out_prefix, loci, n_msa, imap_fi,
