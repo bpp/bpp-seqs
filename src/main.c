@@ -492,10 +492,11 @@ static int run_bam2bpp(const CLI *c, FileInfo **files, int n_files,
             }
         }
         /* Build the Imap sample list as it will appear in the output file
-         * (sample or sample_1/sample_2 for SPLIT). */
-        int n_imap_eff = (a.phasing == PHASE_SPLIT) ? a.n_bams * 2 : a.n_bams;
+         * (sample, or sample_1/sample_2 for SPLIT and VCF phasing). */
+        int two_per = (a.phasing == PHASE_SPLIT || a.phasing == PHASE_VCF);
+        int n_imap_eff = two_per ? a.n_bams * 2 : a.n_bams;
         char **imap_eff = (char **)calloc((size_t)n_imap_eff, sizeof(char *));
-        if (a.phasing == PHASE_SPLIT) {
+        if (two_per) {
             for (int i = 0; i < a.n_bams; i++) {
                 char buf[256];
                 snprintf(buf, sizeof(buf), "%s_1", bams[i]->sample);

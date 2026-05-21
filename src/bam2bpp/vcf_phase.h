@@ -24,6 +24,7 @@
 
 #include <htslib/vcf.h>
 #include <htslib/hts.h>
+#include <htslib/tbx.h>
 
 #include "bam2bpp.h"
 
@@ -39,8 +40,10 @@
 typedef struct {
     htsFile   *fp;
     bcf_hdr_t *hdr;
-    hts_idx_t *idx;
+    hts_idx_t *idx;     /* CSI/BAI for BCF input; NULL for VCF.gz */
+    tbx_t     *tbx;     /* tabix index for VCF.gz; NULL for BCF */
     char      *path;
+    int        is_bcf;  /* 1 if BCF, 0 if VCF.gz */
 } VcfPhase;
 
 VcfPhase *open_vcf_phase(const char *path);

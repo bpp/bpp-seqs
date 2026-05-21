@@ -12,12 +12,18 @@ cd "$here"
 
 REGION="chr22:20000000-20100000"
 
+# Two individuals per super-population: gives 4 chromosomes per population
+# for θ estimation when the data are phased.
 # (sample, super-pop, ENA CRAM URL)
 SAMPLES=(
   "HG00096:EUR:https://ftp.sra.ebi.ac.uk/vol1/run/ERR324/ERR3240114/HG00096.final.cram"
+  "HG00099:EUR:https://ftp.sra.ebi.ac.uk/vol1/run/ERR324/ERR3240116/HG00099.final.cram"
   "HG01595:EAS:https://ftp.sra.ebi.ac.uk/vol1/run/ERR324/ERR3242062/HG01595.final.cram"
+  "HG01596:EAS:https://ftp.sra.ebi.ac.uk/vol1/run/ERR324/ERR3242063/HG01596.final.cram"
   "NA19017:AFR:https://ftp.sra.ebi.ac.uk/vol1/run/ERR323/ERR3239683/NA19017.final.cram"
+  "NA19019:AFR:https://ftp.sra.ebi.ac.uk/vol1/run/ERR323/ERR3239684/NA19019.final.cram"
   "HG01112:AMR:https://ftp.sra.ebi.ac.uk/vol1/run/ERR324/ERR3241828/HG01112.final.cram"
+  "HG01113:AMR:https://ftp.sra.ebi.ac.uk/vol1/run/ERR324/ERR3241829/HG01113.final.cram"
 )
 
 # 1) GRCh38 chr22 reference for CRAM decoding.
@@ -51,17 +57,23 @@ done
 if [[ ! -s phased.vcf.gz ]]; then
     echo "  fetching phased VCF slice ..."
     PHASED_URL="https://ftp.1000genomes.ebi.ac.uk/vol1/ftp/data_collections/1000G_2504_high_coverage/working/20220422_3202_phased_SNV_INDEL_SV/1kGP_high_coverage_Illumina.chr22.filtered.SNV_INDEL_SV_phased_panel.vcf.gz"
-    bcftools view -O z -r "$REGION" -s HG00096,HG01595,NA19017,HG01112 \
+    bcftools view -O z -r "$REGION" \
+        -s HG00096,HG00099,HG01595,HG01596,NA19017,NA19019,HG01112,HG01113 \
         "$PHASED_URL" > phased.vcf.gz
-    tabix -p vcf phased.vcf.gz
+    bcftools index -ft phased.vcf.gz
+    bcftools index -fc phased.vcf.gz
 fi
 
 # 4) Imap (sample -> super-population for population structure).
 cat > samples.imap <<'EOF'
 HG00096	EUR
+HG00099	EUR
 HG01595	EAS
+HG01596	EAS
 NA19017	AFR
+NA19019	AFR
 HG01112	AMR
+HG01113	AMR
 EOF
 
 echo

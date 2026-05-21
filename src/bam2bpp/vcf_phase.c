@@ -71,18 +71,35 @@ VcfPhase *open_vcf_phase(const char *path)
         return NULL;
     }
 
-    /* Try CSI index first, fall back to TBI */
-    v->idx = bcf_index_load3(path, NULL, 0);
-    if (!v->idx) {
-        fprintf(stderr,
-                "Error: no index for '%s'\n"
-                "       Run: bcftools index %s\n", path, path);
-        bcf_hdr_destroy(v->hdr);
-        hts_close(v->fp); free(v->path); free(v);
-        return NULL;
+    /* Dispatch on file format: BCF wants a CSI/BAI index queried via
+     * bcf_itr_*; VCF.gz wants a tabix index queried via tbx_itr_* with
+     * a vcf_parse step.  Detect from the htsFile format field. */
+    v->is_bcf = (v->fp->format.format == bcf);
+
+    if (v->is_bcf) {
+        v->idx = bcf_index_load3(path, NULL, 0);
+        if (!v->idx) {
+            fprintf(stderr,
+                    "Error: no CSI index for BCF '%s'\n"
+                    "       Run: bcftools index %s\n", path, path);
+            bcf_hdr_destroy(v->hdr);
+            hts_close(v->fp); free(v->path); free(v);
+            return NULL;
+        }
+    } else {
+        v->tbx = tbx_index_load3(path, NULL, 0);
+        if (!v->tbx) {
+            fprintf(stderr,
+                    "Error: no tabix index for VCF.gz '%s'\n"
+                    "       Run: tabix -p vcf %s\n", path, path);
+            bcf_hdr_destroy(v->hdr);
+            hts_close(v->fp); free(v->path); free(v);
+            return NULL;
+        }
     }
 
-    fprintf(stderr, "Opened phased VCF: %s  (%d samples)\n",
+    fprintf(stderr, "Opened phased %s: %s  (%d samples)\n",
+            v->is_bcf ? "BCF" : "VCF.gz",
             path, bcf_hdr_nsamples(v->hdr));
     return v;
 }
@@ -91,6 +108,7 @@ void close_vcf_phase(VcfPhase *v)
 {
     if (!v) return;
     if (v->idx) hts_idx_destroy(v->idx);
+    if (v->tbx) tbx_destroy(v->tbx);
     if (v->hdr) bcf_hdr_destroy(v->hdr);
     if (v->fp)  hts_close(v->fp);
     free(v->path);
@@ -249,7 +267,9 @@ static void pass2_vcf(VcfPhase     *vcf,
              "%s:%" PRId32 "-%" PRId32,
              loc->chrom, loc->start + 1, loc->end);
 
-    hts_itr_t *itr = bcf_itr_querys(vcf->idx, vcf->hdr, region);
+    hts_itr_t *itr = vcf->is_bcf
+        ? bcf_itr_querys(vcf->idx, vcf->hdr, region)
+        : tbx_itr_querys(vcf->tbx, region);
     if (!itr) return;   /* no records in this region */
 
     bcf1_t  *rec     = bcf_init();
@@ -259,13 +279,21 @@ static void pass2_vcf(VcfPhase     *vcf,
     int      ndp_arr = 0;
     int32_t *ps_arr  = NULL;
     int      nps_arr = 0;
+    kstring_t kst = {0, 0, NULL};   /* used for VCF.gz text rows */
 
     /* Track phase-set per sample to warn on within-locus PS changes */
     int32_t *prev_ps = calloc(n_bams, sizeof(int32_t));
     int      ps_warned = 0;
     for (int i = 0; i < n_bams; i++) prev_ps[i] = bcf_int32_missing;
 
-    while (bcf_itr_next(vcf->fp, itr, rec) >= 0) {
+    /* Iteration loop: read one record per pass, dispatching on format. */
+    while (1) {
+        if (vcf->is_bcf) {
+            if (bcf_itr_next(vcf->fp, itr, rec) < 0) break;
+        } else {
+            if (tbx_itr_next(vcf->fp, vcf->tbx, itr, &kst) < 0) break;
+            if (vcf_parse(&kst, vcf->hdr, rec) != 0) continue;
+        }
         bcf_unpack(rec, BCF_UN_ALL);
 
         /* Only biallelic SNPs: skip indels, MNPs, multi-allelic sites */
@@ -368,6 +396,7 @@ static void pass2_vcf(VcfPhase     *vcf,
     free(dp_arr);
     free(ps_arr);
     free(prev_ps);
+    if (kst.s) free(kst.s);
     bcf_destroy(rec);
     hts_itr_destroy(itr);
 }
@@ -511,19 +540,28 @@ VcfPhaseSampleStat *vcf_phase_classify(VcfPhase     *vcf,
         if (bam_to_vcf[i] < 0) stats[i].not_in_vcf = 1;
     }
 
-    bcf1_t  *rec     = bcf_init();
-    int32_t *gt_arr  = NULL;
-    int      ngt_arr = 0;
-    char     region[1024];
+    bcf1_t   *rec     = bcf_init();
+    int32_t  *gt_arr  = NULL;
+    int       ngt_arr = 0;
+    char      region[1024];
+    kstring_t kst = {0, 0, NULL};
 
     for (int li = 0; li < n_loci; li++) {
         snprintf(region, sizeof(region),
                  "%s:%" PRId32 "-%" PRId32,
                  loci[li].chrom, loci[li].start + 1, loci[li].end);
-        hts_itr_t *itr = bcf_itr_querys(vcf->idx, vcf->hdr, region);
+        hts_itr_t *itr = vcf->is_bcf
+            ? bcf_itr_querys(vcf->idx, vcf->hdr, region)
+            : tbx_itr_querys(vcf->tbx, region);
         if (!itr) continue;
 
-        while (bcf_itr_next(vcf->fp, itr, rec) >= 0) {
+        while (1) {
+            if (vcf->is_bcf) {
+                if (bcf_itr_next(vcf->fp, itr, rec) < 0) break;
+            } else {
+                if (tbx_itr_next(vcf->fp, vcf->tbx, itr, &kst) < 0) break;
+                if (vcf_parse(&kst, vcf->hdr, rec) != 0) continue;
+            }
             bcf_unpack(rec, BCF_UN_ALL);
             if (rec->n_allele < 2) continue;
 
@@ -553,6 +591,7 @@ VcfPhaseSampleStat *vcf_phase_classify(VcfPhase     *vcf,
     }
 
     free(gt_arr);
+    if (kst.s) free(kst.s);
     bcf_destroy(rec);
     free(bam_to_vcf);
     return stats;

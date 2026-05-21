@@ -30,8 +30,14 @@ tests/realdata/samples.imap
 tests/realdata/mask.bed
 tests/realdata/loci.bed
 tests/realdata/result.*
+tests/realdata/result_*
+tests/realdata/loci.bed
+tests/realdata/loci_*.bed
+tests/realdata/mask.bed
 tests/realdata/bpp_out.*
 tests/realdata/phased.vcf.gz
 tests/realdata/phased.vcf.gz.tbi
 tests/realdata/phased.vcf.gz.csi
+tests/realdata/phased.bcf
+tests/realdata/phased.bcf.csi
 tests/realdata/1kGP_high_coverage_Illumina.*
