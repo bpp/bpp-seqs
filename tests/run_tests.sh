@@ -553,7 +553,120 @@ PY
 }
 run "42. recommended_phase = '0 0' under --phasing split" t_phase_recommend_split
 
-# ── Scenario 43: gvcf2bpp converter ────────────────────────────────────────
+# ── Scenarios 43–49: input-combination coverage ─────────────────────────
+
+# Synthesize a tiny phased VCF over our chr1 test reference + ind1-4 samples.
+make_phased_vcf() {
+    [[ -s "$tmp/phased.vcf.gz" ]] && return 0
+    cat > "$tmp/phased.vcf" <<'VCF'
+##fileformat=VCFv4.2
+##FORMAT=<ID=GT,Number=1,Type=String,Description="Genotype">
+##contig=<ID=chr1,length=2500>
+#CHROM	POS	ID	REF	ALT	QUAL	FILTER	INFO	FORMAT	ind1	ind2	ind3	ind4
+chr1	100	.	A	T	.	PASS	.	GT	0|1	0|0	1|1	0|0
+chr1	200	.	C	G	.	PASS	.	GT	0|0	1|0	0|1	1|1
+chr1	1500	.	A	C	.	PASS	.	GT	0|0	0|1	1|0	0|0
+VCF
+    bgzip -f "$tmp/phased.vcf"
+    tabix -fp vcf "$tmp/phased.vcf.gz"
+    bcftools index -fc "$tmp/phased.vcf.gz"
+    # also a BCF copy for the BCF/CSI path
+    bcftools view -O b -o "$tmp/phased.bcf" "$tmp/phased.vcf.gz" 2>/dev/null
+    bcftools index -fc "$tmp/phased.bcf"
+}
+
+# BAM + --phasing vcf with VCF.gz (tabix path, the recently-fixed branch).
+t_bam_phasing_vcf_gz() {
+    make_phased_vcf || return 1
+    "$bin" --quiet --keep-invariant --out "$tmp/pv" \
+        --phasing vcf --phased-vcf "$tmp/phased.vcf.gz" \
+        "$data/ind1.bam" "$data/ind2.bam" "$data/ind3.bam" "$data/ind4.bam" \
+        "$data/test_ref.fa" "$data/loci.bed" "$data/imap.txt" >/dev/null 2>&1 || return 1
+    # 4 individuals * 2 haplotypes per locus = 8 sequences
+    awk '/^[0-9]+ [0-9]+/{print $1; exit}' "$tmp/pv.txt" | grep -q '^8$' && \
+        grep -q '^\^ind1_1' "$tmp/pv.txt" && grep -q '^\^ind4_2' "$tmp/pv.txt"
+}
+run "43. BAM + --phasing vcf with VCF.gz tabix index" t_bam_phasing_vcf_gz
+
+# BAM + --phasing vcf with BCF (CSI path).
+t_bam_phasing_vcf_bcf() {
+    make_phased_vcf || return 1
+    "$bin" --quiet --keep-invariant --out "$tmp/pb" \
+        --phasing vcf --phased-vcf "$tmp/phased.bcf" \
+        "$data/ind1.bam" "$data/ind2.bam" "$data/ind3.bam" "$data/ind4.bam" \
+        "$data/test_ref.fa" "$data/loci.bed" "$data/imap.txt" >/dev/null 2>&1 || return 1
+    diff -q "$tmp/pv.txt" "$tmp/pb.txt" >/dev/null
+}
+run "44. BAM + --phasing vcf with BCF/CSI matches VCF.gz output" t_bam_phasing_vcf_bcf
+
+# BAM + --phasing split (two haplotypes per individual, arbitrary phase).
+t_bam_phasing_split() {
+    "$bin" --quiet --keep-invariant --phasing split --out "$tmp/ps" \
+        "$data/ind1.bam" "$data/ind2.bam" "$data/ind3.bam" "$data/ind4.bam" \
+        "$data/test_ref.fa" "$data/loci.bed" "$data/imap.txt" >/dev/null 2>&1 || return 1
+    awk '/^[0-9]+ [0-9]+/{print $1; exit}' "$tmp/ps.txt" | grep -q '^8$' && \
+        grep -q '^\^ind1_1' "$tmp/ps.txt" && grep -q '^\^ind1_2' "$tmp/ps.txt" && \
+        [[ $(grep -c '^ind1_' "$tmp/ps.imap") -eq 2 ]]
+}
+run "45. BAM + --phasing split emits 2 unphased haplotypes per individual" t_bam_phasing_split
+
+# BAM + --phasing haploid (single major-allele sequence per individual).
+t_bam_phasing_haploid() {
+    "$bin" --quiet --keep-invariant --phasing haploid --out "$tmp/ph" \
+        "$data/ind1.bam" "$data/ind2.bam" "$data/ind3.bam" "$data/ind4.bam" \
+        "$data/test_ref.fa" "$data/loci.bed" "$data/imap.txt" >/dev/null 2>&1 || return 1
+    # 1 sequence per sample (no _1/_2 suffix); IUPAC codes (R/Y/S/W/K/M)
+    # must not appear because haploid takes the major allele only.
+    awk '/^[0-9]+ [0-9]+/{print $1; exit}' "$tmp/ph.txt" | grep -q '^4$' && \
+        ! grep -E '^\^ind1.*[RYSWKM]' "$tmp/ph.txt" >/dev/null
+}
+run "46. BAM + --phasing haploid emits 1 major-allele sequence per individual" t_bam_phasing_haploid
+
+# FASTQ input → workflow=needs_alignment_first with an advisory.
+t_fastq_advisory() {
+    # Synthesize a tiny FASTQ
+    python3 -c "
+for i in range(5):
+    print(f'@read{i+1}')
+    print('ACGT' * 30)
+    print('+')
+    print('I' * 120)
+" > "$tmp/reads.fastq"
+    local out
+    out=$("$bin" --json --dry-run "$tmp/reads.fastq" "$data/test_ref.fa" "$data/loci.bed" 2>/dev/null) || return 1
+    python3 - "$out" <<'PY'
+import json, sys
+d = json.loads(sys.argv[1])
+assert d["workflow"] == "needs_alignment_first", d["workflow"]
+assert "advisory" in d and "alignment" in d["advisory"].lower(), d.get("advisory")
+PY
+}
+run "47. FASTQ input reports needs_alignment_first with advisory" t_fastq_advisory
+
+# FASTA contigs (multiple sequences of varying lengths) → assembly_not_supported
+t_contigs_advisory() {
+    python3 -c "
+import random
+random.seed(7)
+with open('$tmp/contigs.fa','w') as f:
+    for i, L in enumerate([1000, 1500, 800], start=1):
+        f.write(f'>contig{i}\n')
+        seq = ''.join(random.choice('ACGT') for _ in range(L))
+        for j in range(0, L, 60): f.write(seq[j:j+60] + '\n')
+"
+    local out
+    out=$("$bin" --json --dry-run "$tmp/contigs.fa" 2>/dev/null) || return 1
+    python3 - "$out" <<'PY'
+import json, sys
+d = json.loads(sys.argv[1])
+assert d["workflow"] == "assembly_not_supported", d["workflow"]
+assert "advisory" in d, d
+assert "align" in d["advisory"].lower() or "contigs" in d["advisory"].lower(), d["advisory"]
+PY
+}
+run "48. FASTA contigs reports assembly_not_supported with advisory" t_contigs_advisory
+
+# ── Scenario 49: gvcf2bpp converter ────────────────────────────────────────
 t9() {
     [[ -f "$data/tiny.g.vcf.gz" && -f "$data/tiny.g.vcf.gz.tbi" ]] || return 0  # skip if absent
     "$bin" --quiet --min-length 50 --keep-invariant --max-missing 1.0 \
@@ -561,7 +674,7 @@ t9() {
         "$data/tiny.g.vcf.gz" "$data/loci.bed" "$data/imap.txt" >/dev/null 2>&1 || return 1
     [[ -f "$tmp/gv.txt" ]]
 }
-run "43. gvcf2bpp converts tiny gVCF fixture" t9
+run "49. gvcf2bpp converts tiny gVCF fixture" t9
 
 # ── Summary ───────────────────────────────────────────────────────────────
 echo
