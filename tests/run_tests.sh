@@ -666,7 +666,43 @@ PY
 }
 run "48. FASTA contigs reports assembly_not_supported with advisory" t_contigs_advisory
 
-# ── Scenario 49: gvcf2bpp converter ────────────────────────────────────────
+# ── Scenario 49: bcftools-style gVCF (no <NON_REF>, INFO/END blocks) ────
+t_bcftools_gvcf() {
+    # Synthesize a bcftools-style gVCF: blocks have empty ALT and INFO/END.
+    cat > "$tmp/bt.gvcf" <<'VCF'
+##fileformat=VCFv4.2
+##FORMAT=<ID=GT,Number=1,Type=String,Description="Genotype">
+##FORMAT=<ID=DP,Number=1,Type=Integer,Description="Depth">
+##INFO=<ID=END,Number=1,Type=Integer,Description="End position">
+##INFO=<ID=MIN_DP,Number=1,Type=Integer,Description="Min DP">
+##contig=<ID=chr1,length=2500>
+#CHROM	POS	ID	REF	ALT	QUAL	FILTER	INFO	FORMAT	ind1	ind2	ind3	ind4
+chr1	1	.	A	.	.	.	END=99;MIN_DP=30	GT:DP	0/0:30	0/0:30	0/0:30	0/0:30
+chr1	100	.	A	T	100	.	.	GT:DP	0/0:30	0/1:30	1/1:30	0/0:30
+chr1	101	.	C	.	.	.	END=199;MIN_DP=30	GT:DP	0/0:30	0/0:30	0/0:30	0/0:30
+chr1	200	.	C	G	100	.	.	GT:DP	0/0:30	1/0:30	0/1:30	1/1:30
+chr1	201	.	A	.	.	.	END=2500;MIN_DP=30	GT:DP	0/0:30	0/0:30	0/0:30	0/0:30
+VCF
+    bgzip -f "$tmp/bt.gvcf"
+    tabix -fp vcf "$tmp/bt.gvcf.gz"
+
+    # Must be classified as gVCF (not VCF) → workflow becomes gvcf2bpp.
+    local out
+    out=$("$bin" --json --dry-run "$tmp/bt.gvcf.gz" "$data/loci.bed" "$data/imap.txt" 2>/dev/null) || return 1
+    python3 - "$out" <<'PY'
+import json, sys
+d = json.loads(sys.argv[1])
+assert d["workflow"] == "gvcf2bpp", d["workflow"]
+PY
+
+    # And conversion must produce sane output.
+    "$bin" --quiet --keep-invariant --max-missing 1.0 --min-length 50 \
+        --out "$tmp/bg" "$tmp/bt.gvcf.gz" "$data/loci.bed" "$data/imap.txt" >/dev/null 2>&1 || return 1
+    awk '/^[0-9]+ [0-9]+/{print $1; exit}' "$tmp/bg.txt" | grep -q '^4$'
+}
+run "49. bcftools-style gVCF (INFO/END, no <NON_REF>) classified and converted" t_bcftools_gvcf
+
+# ── Scenario 50: gvcf2bpp converter ────────────────────────────────────────
 t9() {
     [[ -f "$data/tiny.g.vcf.gz" && -f "$data/tiny.g.vcf.gz.tbi" ]] || return 0  # skip if absent
     "$bin" --quiet --min-length 50 --keep-invariant --max-missing 1.0 \
@@ -674,7 +710,7 @@ t9() {
         "$data/tiny.g.vcf.gz" "$data/loci.bed" "$data/imap.txt" >/dev/null 2>&1 || return 1
     [[ -f "$tmp/gv.txt" ]]
 }
-run "49. gvcf2bpp converts tiny gVCF fixture" t9
+run "50. gvcf2bpp converts tiny gVCF fixture" t9
 
 # ── Summary ───────────────────────────────────────────────────────────────
 echo

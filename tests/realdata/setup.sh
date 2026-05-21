@@ -64,7 +64,31 @@ if [[ ! -s phased.vcf.gz ]]; then
     bcftools index -fc phased.vcf.gz
 fi
 
-# 4) Imap (sample -> super-population for population structure).
+# 4) Per-sample bcftools-style gVCFs, merged into one multi-sample gVCF.
+#    Lets us exercise the gvcf2bpp workflow on real coverage-band data
+#    without needing GATK / DeepVariant.
+if [[ ! -s merged.g.vcf.gz ]]; then
+    echo "  generating per-sample gVCFs ..."
+    for entry in "${SAMPLES[@]}"; do
+        IFS=":" read -r sample _ _ <<<"$entry"
+        if [[ ! -s "${sample}.g.vcf.gz" ]]; then
+            bcftools mpileup -f GRCh38_chr22.fa \
+                             --annotate FORMAT/DP,FORMAT/AD \
+                             --max-depth 200 -r "$REGION" "${sample}.bam" 2>/dev/null \
+                | bcftools call --gvcf 0 -m 2>/dev/null \
+                | bgzip > "${sample}.g.vcf.gz"
+            tabix -p vcf "${sample}.g.vcf.gz"
+        fi
+    done
+    echo "  merging into one multi-sample gVCF ..."
+    bcftools merge --gvcf GRCh38_chr22.fa \
+        HG00096.g.vcf.gz HG00099.g.vcf.gz HG01595.g.vcf.gz HG01596.g.vcf.gz \
+        NA19017.g.vcf.gz NA19019.g.vcf.gz HG01112.g.vcf.gz HG01113.g.vcf.gz \
+        -Oz -o merged.g.vcf.gz 2>/dev/null
+    tabix -fp vcf merged.g.vcf.gz
+fi
+
+# 5) Imap (sample -> super-population for population structure).
 cat > samples.imap <<'EOF'
 HG00096	EUR
 HG00099	EUR

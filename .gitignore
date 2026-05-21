@@ -41,3 +41,7 @@ tests/realdata/phased.vcf.gz.csi
 tests/realdata/phased.bcf
 tests/realdata/phased.bcf.csi
 tests/realdata/1kGP_high_coverage_Illumina.*
+tests/realdata/*.g.vcf.gz
+tests/realdata/*.g.vcf.gz.tbi
+tests/realdata/gv_real.*
+tests/realdata/bpp_gvcf_out.*

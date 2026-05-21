@@ -62,6 +62,21 @@ for tag in adjacent small medium large; do
         "$n_loci" "$n_seqs" "$total_snps" "$mean_dp"
 done
 
+# ─── gvcf2bpp on the merged real gVCF (different ingest pathway) ──────────
+echo
+echo "=========================================================="
+echo "  gvcf2bpp on real merged gVCF (8 samples)"
+echo "=========================================================="
+rm -f result_gvcf.*
+"$BIN" --quiet --keep-invariant --max-missing 0.5 \
+    --out result_gvcf \
+    merged.g.vcf.gz loci_medium.bed samples.imap
+
+n_loci=$(grep -cE '^[0-9]+ [0-9]+$' result_gvcf.txt)
+n_seqs=$(awk '/^[0-9]+ [0-9]+$/ {print $1; exit}' result_gvcf.txt)
+total_snps=$(awk -F'\t' 'NR>1 {sum+=$3} END {print sum+0}' result_gvcf.stats.tsv)
+printf "    BPP result:  %d loci x %d sequences, total SNPs = %d\n" "$n_loci" "$n_seqs" "$total_snps"
+
 # ─── extract: take the first 5 loci from the medium partition ─────────────
 echo
 echo "=========================================================="

@@ -645,6 +645,7 @@ static void inspect_vcf(const char *path, FileInfo *fi)
     bcf1_t *rec = bcf_init();
     int n_phased = 0, n_gts = 0, n_sampled = 0;
     int is_gvcf = 0;
+    int n_block_records = 0;
     const int LIMIT = 10000;
     int32_t *gt_arr = NULL;
     int gt_arr_n = 0;
@@ -653,16 +654,23 @@ static void inspect_vcf(const char *path, FileInfo *fi)
         n_sampled++;
         bcf_unpack(rec, BCF_UN_ALL);
 
-        /* check ALT for <NON_REF> */
+        /* check ALT for <NON_REF> (GATK / DeepVariant convention) */
         for (int a = 1; a < rec->n_allele; a++) {
             if (rec->d.allele[a] && strcmp(rec->d.allele[a], "<NON_REF>") == 0) {
                 is_gvcf = 1;
             }
         }
-        /* check INFO for END (used in gVCF coverage bands too) */
-        if (bcf_get_info_int32(hdr, rec, "END", &gt_arr, &gt_arr_n) > 0) {
-            /* presence of END info doesn't itself mean gVCF, but the
-             * <NON_REF> check above is the canonical marker. */
+        /* bcftools-style gVCF: reference homozygous blocks have an empty
+         * ALT (n_allele == 1) and INFO/END > POS (1-based inclusive).
+         * Count records that look like such blocks. */
+        {
+            int32_t *end_arr = NULL; int n_end = 0;
+            int got_end = bcf_get_info_int32(hdr, rec, "END", &end_arr, &n_end);
+            if (got_end > 0 && n_end > 0 && rec->n_allele <= 1 &&
+                end_arr[0] > rec->pos + 1) {
+                n_block_records++;
+            }
+            free(end_arr);
         }
 
         /* phase fraction */
@@ -695,6 +703,13 @@ static void inspect_vcf(const char *path, FileInfo *fi)
             }
             if (is_gvcf) break;
         }
+    }
+
+    /* bcftools-style gVCF detection: if a substantial fraction of records
+     * are explicit reference homozygous blocks (INFO/END > POS on a record
+     * with no ALT), this is a gVCF even without <NON_REF> markers. */
+    if (!is_gvcf && n_sampled > 0 && n_block_records * 4 >= n_sampled) {
+        is_gvcf = 1;
     }
 
     fi->ft = is_gvcf ? BS_GVCF : BS_VCF;
