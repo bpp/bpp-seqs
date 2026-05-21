@@ -17,6 +17,8 @@
 #include "workflow.h"
 #include "output.h"
 #include "sanity.h"
+#include "cmd_extract.h"
+#include "cmd_windows.h"
 #include "converters/converters.h"
 #include "converters/aln_writer.h"
 #include "bam2bpp/bam2bpp.h"
@@ -544,6 +546,16 @@ fail:
 int main(int argc, char **argv)
 {
     if (argc < 2) { print_usage(stderr, argv[0]); return 1; }
+
+    /* Subcommand dispatch: if argv[1] is a recognised verb, hand off
+     * with argv[1..] (the verb becomes argv[0] for the subcommand). */
+    if (strcmp(argv[1], "extract") == 0) {
+        return cmd_extract(argc - 1, argv + 1);
+    }
+    if (strcmp(argv[1], "windows") == 0) {
+        return cmd_windows(argc - 1, argv + 1);
+    }
+    /* No verb matched → fall through to the existing inspect/convert flow. */
 
     CLI cli;
     cli_init(&cli);

@@ -45,6 +45,9 @@ SRCS := \
   src/output.c \
   src/json_writer.c \
   src/sanity.c \
+  src/bpp_parser.c \
+  src/cmd_extract.c \
+  src/cmd_windows.c \
   src/bam2bpp/pileup.c \
   src/bam2bpp/genotype.c \
   src/bam2bpp/locus.c \

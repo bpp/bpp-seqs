@@ -368,7 +368,162 @@ PY
 }
 run "25. VCF (non-gVCF) workflow reports vcf_not_recommended + advisory" t_vcf_advisory
 
-# ── Scenario 26: gvcf2bpp converter ────────────────────────────────────────
+# ── Scenarios 26–34: `extract` subcommand ────────────────────────────────
+
+# Build a master BPP file from the bam2bpp fixture (4 loci passing QC).
+prep_master() {
+    [[ -f "$tmp/mas.txt" ]] && return 0
+    "$bin" --quiet --out "$tmp/mas" \
+        "$data/ind1.bam" "$data/ind2.bam" "$data/ind3.bam" "$data/ind4.bam" \
+        "$data/test_ref.fa" "$data/loci.bed" "$data/imap.txt" >/dev/null 2>&1
+}
+
+t_extract_by_name() {
+    prep_master || return 1
+    "$bin" extract "$tmp/mas.txt" --loci locus1,locus3 --out "$tmp/x1" >/dev/null 2>&1 || return 1
+    [[ $(awk 'NR>1 {print $1}' "$tmp/x1.loci.tsv" | tr '\n' ' ') == "locus1 locus3 " ]]
+}
+run "26. extract --loci selects named loci" t_extract_by_name
+
+t_extract_by_loci_file() {
+    prep_master || return 1
+    printf '%s\n%s\n' locus2 locus5 > "$tmp/names.txt"
+    "$bin" extract "$tmp/mas.txt" --loci-file "$tmp/names.txt" --out "$tmp/x2" >/dev/null 2>&1 || return 1
+    [[ $(awk 'NR>1 {print $1}' "$tmp/x2.loci.tsv" | tr '\n' ' ') == "locus2 locus5 " ]]
+}
+run "27. extract --loci-file selects names from a file" t_extract_by_loci_file
+
+t_extract_by_range() {
+    prep_master || return 1
+    "$bin" extract "$tmp/mas.txt" --range 2-3 --out "$tmp/x3" >/dev/null 2>&1 || return 1
+    [[ $(awk 'NR>1 {print $1}' "$tmp/x3.loci.tsv" | tr '\n' ' ') == "locus2 locus3 " ]]
+}
+run "28. extract --range selects 1-based index range" t_extract_by_range
+
+t_extract_first_last() {
+    prep_master || return 1
+    "$bin" extract "$tmp/mas.txt" --first 2 --out "$tmp/x4" >/dev/null 2>&1 || return 1
+    [[ $(awk 'NR>1' "$tmp/x4.loci.tsv" | wc -l) -eq 2 ]] || return 1
+    "$bin" extract "$tmp/mas.txt" --last 1 --out "$tmp/x5" >/dev/null 2>&1 || return 1
+    [[ $(awk 'NR>1' "$tmp/x5.loci.tsv" | wc -l) -eq 1 ]]
+}
+run "29. extract --first/--last select by position" t_extract_first_last
+
+t_extract_chrom() {
+    prep_master || return 1
+    "$bin" extract "$tmp/mas.txt" --chrom chr1 --out "$tmp/x6" >/dev/null 2>&1 || return 1
+    [[ $(awk 'NR>1' "$tmp/x6.loci.tsv" | wc -l) -eq 4 ]]
+}
+run "30. extract --chrom matches against .loci.tsv source_chrom" t_extract_chrom
+
+t_extract_min_max_sites() {
+    prep_master || return 1
+    # All master loci are 400 bp; min-sites 500 should match zero.
+    if "$bin" extract "$tmp/mas.txt" --min-sites 500 --out "$tmp/x7" >/dev/null 2>&1; then
+        return 1   # expected failure
+    fi
+    "$bin" extract "$tmp/mas.txt" --max-sites 400 --out "$tmp/x8" >/dev/null 2>&1 || return 1
+    [[ $(awk 'NR>1' "$tmp/x8.loci.tsv" | wc -l) -eq 4 ]]
+}
+run "31. extract --min-sites / --max-sites filter by n_sites" t_extract_min_max_sites
+
+t_extract_invert() {
+    prep_master || return 1
+    "$bin" extract "$tmp/mas.txt" --loci locus2 --invert --out "$tmp/x9" >/dev/null 2>&1 || return 1
+    awk 'NR>1 {print $1}' "$tmp/x9.loci.tsv" | grep -q '^locus2$' && return 1
+    [[ $(awk 'NR>1' "$tmp/x9.loci.tsv" | wc -l) -eq 3 ]]
+}
+run "32. extract --invert keeps loci NOT matching the selection" t_extract_invert
+
+t_extract_imap_passthrough() {
+    prep_master || return 1
+    "$bin" extract "$tmp/mas.txt" --first 1 --out "$tmp/x10" >/dev/null 2>&1 || return 1
+    diff -q "$tmp/x10.imap" "$tmp/mas.imap" >/dev/null
+}
+run "33. extract copies the Imap unchanged" t_extract_imap_passthrough
+
+t_extract_json() {
+    prep_master || return 1
+    local out
+    out=$("$bin" extract "$tmp/mas.txt" --first 2 --out "$tmp/x11" --json 2>/dev/null) || return 1
+    python3 - "$out" <<'PY'
+import json, sys, os
+d = json.loads(sys.argv[1])
+assert d["command"] == "extract"
+assert d["n_loci_kept"] == 2
+assert d["had_loci_tsv"] is True
+for k in ("sequences","loci","imap"):
+    assert os.path.isfile(d["output_files"][k]), d["output_files"][k]
+PY
+}
+run "34. extract --json reports the kept/dropped counts and output files" t_extract_json
+
+# ── Scenarios 35–40: `windows` subcommand ────────────────────────────────
+
+prep_multifa() {
+    [[ -f "$tmp/multi.fa" ]] && return 0
+    python3 -c "
+seq = 'ACGT' * 100
+with open('$tmp/multi.fa','w') as f:
+    for n in ('chr1','chr2','chrX'):
+        f.write(f'>{n}\n')
+        for i in range(0, len(seq), 60): f.write(seq[i:i+60] + '\n')
+"
+    samtools faidx "$tmp/multi.fa"
+}
+
+t_win_basic() {
+    "$bin" windows "$data/test_ref.fa" --window-size 400 --out "$tmp/w1.bed" 2>/dev/null || return 1
+    [[ $(wc -l < "$tmp/w1.bed") -eq 6 ]]
+}
+run "35. windows tiles a single chrom into non-overlapping windows" t_win_basic
+
+t_win_spacing() {
+    "$bin" windows "$data/test_ref.fa" --window-size 400 --min-spacing 200 \
+                  --out "$tmp/w2.bed" 2>/dev/null || return 1
+    [[ $(wc -l < "$tmp/w2.bed") -eq 3 ]]
+}
+run "36. windows --min-spacing thins overlapping/adjacent windows" t_win_spacing
+
+t_win_sample() {
+    "$bin" windows "$data/test_ref.fa" --window-size 400 --n-loci 3 --seed 7 \
+                  --out "$tmp/w3.bed" 2>/dev/null || return 1
+    [[ $(wc -l < "$tmp/w3.bed") -eq 3 ]]
+}
+run "37. windows --n-loci with --seed downsamples reproducibly" t_win_sample
+
+t_win_autosomes() {
+    prep_multifa || return 1
+    "$bin" windows "$tmp/multi.fa" --window-size 100 --autosomes-only \
+                  --out "$tmp/wa.bed" 2>/dev/null || return 1
+    [[ -z $(awk '$1 == "chrX"' "$tmp/wa.bed") ]]
+}
+run "38. windows --autosomes-only drops chrX/Y/mt by name heuristic" t_win_autosomes
+
+t_win_exclude_regions() {
+    prep_multifa || return 1
+    printf 'chr1\t100\t300\n' > "$tmp/mask.bed"
+    "$bin" windows "$tmp/multi.fa" --window-size 100 \
+                  --exclude-regions "$tmp/mask.bed" \
+                  --out "$tmp/wr.bed" 2>/dev/null || return 1
+    # chr1 should have only 2 windows (0-100 and 300-400); 100-200 and 200-300 are masked
+    [[ $(awk '$1 == "chr1"' "$tmp/wr.bed" | wc -l) -eq 2 ]]
+}
+run "39. windows --exclude-regions subtracts a BED mask" t_win_exclude_regions
+
+t_win_pipeline() {
+    # End-to-end: windows -> BED -> conversion
+    "$bin" windows "$data/test_ref.fa" --window-size 400 --skip-edges 100 \
+                  --out "$tmp/pipe.bed" 2>/dev/null || return 1
+    "$bin" --quiet --keep-invariant --out "$tmp/pipe" \
+        "$data/ind1.bam" "$data/ind2.bam" "$data/ind3.bam" "$data/ind4.bam" \
+        "$data/test_ref.fa" "$tmp/pipe.bed" "$data/imap.txt" >/dev/null 2>&1 || return 1
+    [[ -s "$tmp/pipe.txt" && -s "$tmp/pipe.loci.tsv" ]] && \
+        awk 'NR>1 && $3 ~ /pipe.bed$/' "$tmp/pipe.loci.tsv" | head -1 | grep -q BED
+}
+run "40. windows + bam2bpp pipeline produces valid BPP output" t_win_pipeline
+
+# ── Scenario 41: gvcf2bpp converter ────────────────────────────────────────
 t9() {
     [[ -f "$data/tiny.g.vcf.gz" && -f "$data/tiny.g.vcf.gz.tbi" ]] || return 0  # skip if absent
     "$bin" --quiet --min-length 50 --keep-invariant --max-missing 1.0 \
@@ -376,7 +531,7 @@ t9() {
         "$data/tiny.g.vcf.gz" "$data/loci.bed" "$data/imap.txt" >/dev/null 2>&1 || return 1
     [[ -f "$tmp/gv.txt" ]]
 }
-run "26. gvcf2bpp converts tiny gVCF fixture" t9
+run "41. gvcf2bpp converts tiny gVCF fixture" t9
 
 # ── Summary ───────────────────────────────────────────────────────────────
 echo
