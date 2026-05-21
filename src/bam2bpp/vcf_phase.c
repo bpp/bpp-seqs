@@ -416,6 +416,7 @@ int process_locus_vcf(BamFile       **bams,
 {
     int locus_len = (int)(loc->end - loc->start);
     int n_seqs    = 2 * n_bams;   /* always two haplotypes per sample */
+    if (n_bams <= 0 || n_seqs <= 0 || locus_len <= 0) return -1;
 
     /* ------------------------------------------------------------------
      * Build BAM sample → VCF column index mapping.
@@ -444,8 +445,8 @@ int process_locus_vcf(BamFile       **bams,
      * Allocate sequences — all 'N' until a pass writes something.
      * ------------------------------------------------------------------*/
 
-    char **seqs      = calloc(n_seqs, sizeof(char *));
-    char **seq_names = calloc(n_seqs, sizeof(char *));
+    char **seqs      = calloc((size_t)n_seqs, sizeof(char *));
+    char **seq_names = calloc((size_t)n_seqs, sizeof(char *));
     if (!seqs || !seq_names) goto fail;
 
     for (int i = 0; i < n_seqs; i++) {

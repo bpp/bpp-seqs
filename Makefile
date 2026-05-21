@@ -17,7 +17,7 @@
 CC      := cc
 CSTD    := -std=c11
 WARN    := -Wall -Wextra -Wpedantic
-CFLAGS  := -O2 $(CSTD) $(WARN)
+CFLAGS  := -O2 $(CSTD) $(WARN) -D_GNU_SOURCE
 LDFLAGS :=
 PREFIX  ?= /usr/local
 
@@ -68,7 +68,7 @@ BIN  := bpp-seqs
 
 all: $(BIN)
 
-debug: CFLAGS := -O0 -g $(CSTD) $(WARN) $(INCLUDES) -fsanitize=address,undefined
+debug: CFLAGS := -O0 -g $(CSTD) $(WARN) -D_GNU_SOURCE $(INCLUDES) -fsanitize=address,undefined
 debug: LDFLAGS += -fsanitize=address,undefined
 debug: $(BIN)
 
