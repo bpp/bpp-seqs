@@ -305,57 +305,65 @@ static int run_bam2bpp(const CLI *c, FileInfo **files, int n_files,
     BamFile **bams = open_bams(a.bam_paths, a.n_bams, a.max_depth);
     if (!bams) { fai_destroy(fai); goto fail; }
 
+    /* Initial per-sample phasing mirrors the global mode; the VCF
+     * classification below may override per sample so phased samples emit
+     * 2 haplotypes while unphased samples emit 1 IUPAC sequence. */
+    for (int i = 0; i < a.n_bams; i++) bams[i]->sample_phasing = a.phasing;
+
     VcfPhase *vcf = NULL;
     if (a.phasing == PHASE_VCF) {
         vcf = open_vcf_phase(a.phased_vcf);
         if (!vcf) { close_bams(bams, a.n_bams); fai_destroy(fai); goto fail; }
 
-        /* Whole-file phasing policy: scan the VCF up front and see if every
-         * BAM-relevant sample has fully phased heterozygous GTs.  If any
-         * sample has any unphased het, degrade to PHASE_IUPAC and warn. */
+        /* Per-sample classification: PHASE_VCF for fully-phased samples
+         * present in the VCF, PHASE_IUPAC for everything else (samples not
+         * in the VCF, or with any unphased heterozygote in the locus set).
+         * This lets a single run mix phased reference panels with unphased
+         * single-individual samples (e.g. ancient genomes). */
         VcfPhaseSampleStat *ps = vcf_phase_classify(vcf, bams, a.n_bams,
                                                     loci, n_loci);
-        int any_unphased = 0;
-        int any_missing  = 0;
-        int total_unphased = 0;
+        int n_phased = 0, n_iupac = 0;
         for (int i = 0; i < a.n_bams; i++) {
-            if (ps[i].not_in_vcf)         any_missing++;
-            if (ps[i].n_unphased > 0)     { any_unphased = 1;
-                                            total_unphased += ps[i].n_unphased; }
-        }
-        if (any_unphased || any_missing) {
-            if (!c->quiet) {
-                fprintf(stderr,
-                    "WARNING: phased-VCF check found %d unphased het GT%s "
-                    "across %d sample%s; %d sample%s missing from the VCF.\n",
-                    total_unphased, total_unphased == 1 ? "" : "s",
-                    a.n_bams, a.n_bams == 1 ? "" : "s",
-                    any_missing, any_missing == 1 ? "" : "s");
-                for (int i = 0; i < a.n_bams; i++) {
-                    if (ps[i].not_in_vcf) {
-                        fprintf(stderr, "         %-15s NOT in VCF\n", ps[i].sample);
-                    } else if (ps[i].n_unphased > 0) {
-                        double frac = ps[i].n_het ?
-                            100.0 * ps[i].n_unphased / ps[i].n_het : 0.0;
-                        fprintf(stderr,
-                            "         %-15s %d/%d unphased (%.1f%%)\n",
-                            ps[i].sample, ps[i].n_unphased, ps[i].n_het, frac);
-                    }
-                }
-                fprintf(stderr,
-                    "         Falling back to IUPAC encoding; the BPP control "
-                    "file should use `phase = 1 ...` for all species.\n");
+            if (ps[i].not_in_vcf || ps[i].n_unphased > 0) {
+                bams[i]->sample_phasing = PHASE_IUPAC;
+                n_iupac++;
+            } else {
+                bams[i]->sample_phasing = PHASE_VCF;
+                n_phased++;
             }
-            a.phasing = PHASE_IUPAC;
-            close_vcf_phase(vcf);
-            vcf = NULL;
-        } else if (!c->quiet) {
+        }
+        if (!c->quiet) {
             fprintf(stderr,
-                "  --phasing vcf: all %d sample%s fully phased; "
-                "emitting 2 haplotypes per individual.\n",
-                a.n_bams, a.n_bams == 1 ? "" : "s");
+                "  --phasing vcf: %d sample%s fully phased (split into "
+                "haplotypes), %d sample%s unphased (IUPAC).\n",
+                n_phased, n_phased == 1 ? "" : "s",
+                n_iupac,  n_iupac  == 1 ? "" : "s");
+            for (int i = 0; i < a.n_bams; i++) {
+                if (ps[i].not_in_vcf) {
+                    fprintf(stderr, "         %-20s NOT in VCF → IUPAC\n",
+                            ps[i].sample);
+                } else if (ps[i].n_unphased > 0) {
+                    double frac = ps[i].n_het ?
+                        100.0 * ps[i].n_unphased / ps[i].n_het : 0.0;
+                    fprintf(stderr,
+                        "         %-20s %d/%d unphased (%.1f%%) → IUPAC\n",
+                        ps[i].sample, ps[i].n_unphased, ps[i].n_het, frac);
+                }
+            }
+            if (n_iupac > 0)
+                fprintf(stderr,
+                    "         BPP control file: phase = 0 for phased "
+                    "species, 1 for unphased.\n");
         }
         vcf_phase_stats_free(ps, a.n_bams);
+
+        /* If nothing got classified as PHASE_VCF, close the VCF — pass 2
+         * is not needed; pass 1 still does the right thing per sample. */
+        if (n_phased == 0) {
+            close_vcf_phase(vcf);
+            vcf = NULL;
+            a.phasing = PHASE_IUPAC;
+        }
     }
 
     bam2bpp_writer_set_quiet(c->quiet);
@@ -459,7 +467,14 @@ static int run_bam2bpp(const CLI *c, FileInfo **files, int n_files,
         goto fail2;
     }
 
-    int n_seqs = (a.phasing == PHASE_SPLIT) ? 2 * a.n_bams : a.n_bams;
+    /* Per-locus sequence count comes from results[].n_seqs (locus-level),
+     * but for the summary we report the maximum across loci — which equals
+     * the sum of per-sample emission counts (1 or 2 each). */
+    int n_seqs = 0;
+    for (int i = 0; i < a.n_bams; i++) {
+        n_seqs += (bams[i]->sample_phasing == PHASE_SPLIT ||
+                   bams[i]->sample_phasing == PHASE_VCF) ? 2 : 1;
+    }
 
     write_bpp_file  (a.out_prefix, results, n_results, n_seqs);
     write_imap_file (a.out_prefix, bams, a.n_bams, imap, n_imap, a.phasing);
@@ -491,21 +506,27 @@ static int run_bam2bpp(const CLI *c, FileInfo **files, int n_files,
                 ids[n_ids++] = id;
             }
         }
-        /* Build the Imap sample list as it will appear in the output file
-         * (sample, or sample_1/sample_2 for SPLIT and VCF phasing). */
-        int two_per = (a.phasing == PHASE_SPLIT || a.phasing == PHASE_VCF);
-        int n_imap_eff = two_per ? a.n_bams * 2 : a.n_bams;
+        /* Build the Imap sample list as it will appear in the output file.
+         * Per-sample: PHASE_SPLIT and PHASE_VCF samples contribute
+         * <sample>_1 and <sample>_2; everything else contributes <sample>. */
+        int n_imap_eff = 0;
+        for (int i = 0; i < a.n_bams; i++) {
+            n_imap_eff += (bams[i]->sample_phasing == PHASE_SPLIT ||
+                           bams[i]->sample_phasing == PHASE_VCF) ? 2 : 1;
+        }
         char **imap_eff = (char **)calloc((size_t)n_imap_eff, sizeof(char *));
-        if (two_per) {
-            for (int i = 0; i < a.n_bams; i++) {
+        int k = 0;
+        for (int i = 0; i < a.n_bams; i++) {
+            if (bams[i]->sample_phasing == PHASE_SPLIT ||
+                bams[i]->sample_phasing == PHASE_VCF) {
                 char buf[256];
                 snprintf(buf, sizeof(buf), "%s_1", bams[i]->sample);
-                imap_eff[2*i] = strdup(buf);
+                imap_eff[k++] = strdup(buf);
                 snprintf(buf, sizeof(buf), "%s_2", bams[i]->sample);
-                imap_eff[2*i+1] = strdup(buf);
+                imap_eff[k++] = strdup(buf);
+            } else {
+                imap_eff[k++] = strdup(bams[i]->sample);
             }
-        } else {
-            for (int i = 0; i < a.n_bams; i++) imap_eff[i] = strdup(bams[i]->sample);
         }
         sanity_check_imap_coverage(ids, n_ids, imap_eff, n_imap_eff, stderr);
         for (int i = 0; i < n_ids; i++) free(ids[i]);
@@ -550,11 +571,26 @@ static int run_bam2bpp(const CLI *c, FileInfo **files, int n_files,
             }
         }
         if (n_species > 0) {
-            int flag = (a.phasing == PHASE_IUPAC) ? 1 : 0;
+            /* Per-species flag.  A species is "phased" (flag=0) only if every
+             * BAM sample mapping to that population is PHASE_VCF / SPLIT /
+             * HAPLOID.  If any sample is PHASE_IUPAC, the species needs BPP
+             * to do phase sampling → flag=1. */
             size_t cap = (size_t)n_species * 2 + 1;
             char *buf = (char *)malloc(cap);
             int off = 0;
             for (int i = 0; i < n_species; i++) {
+                int flag = 0;   /* default: phased */
+                int saw_sample = 0;
+                for (int b = 0; b < a.n_bams; b++) {
+                    const char *bpop = imap_lookup(imap, n_imap, bams[b]->sample);
+                    if (!bpop || strcmp(bpop, seen[i]) != 0) continue;
+                    saw_sample = 1;
+                    if (bams[b]->sample_phasing == PHASE_IUPAC) {
+                        flag = 1;
+                        break;
+                    }
+                }
+                if (!saw_sample) flag = 1;  /* unreached population — assume unphased */
                 off += snprintf(buf + off, cap - (size_t)off,
                                 "%s%d", i ? " " : "", flag);
             }

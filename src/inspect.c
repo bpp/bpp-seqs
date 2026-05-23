@@ -320,7 +320,9 @@ static FileType detect_type_from_text(const char *head, int n)
     }
     /* FASTA */
     if (n >= 1 && head[0] == '>') return BS_FASTA_MSA;  /* refined later */
-    /* PHYLIP: first line is two ints */
+    /* BED must come before PHYLIP/IMAP because line_is_two_ints accepts
+     * trailing junk and would otherwise match BED lines whose chromosome
+     * column is purely numeric (e.g. "22\t30000000\t30001000\tname"). */
     {
         char line1[512];
         int i = 0;
@@ -328,12 +330,13 @@ static FileType detect_type_from_text(const char *head, int n)
             line1[i] = head[i]; i++;
         }
         line1[i] = '\0';
+        if (line_is_bed(line1)) return BS_BED;
         if (line_is_two_ints(line1) && i < n) {
-            /* must have a follow-up line with non-empty content */
+            /* PHYLIP: first line is two ints, follow-up line non-empty */
             return BS_PHYLIP;
         }
     }
-    /* BED before IMAP (BED is more specific) */
+    /* IMAP (least specific — BED and PHYLIP already handled above) */
     {
         char line1[512];
         int i = 0;
@@ -341,7 +344,6 @@ static FileType detect_type_from_text(const char *head, int n)
             line1[i] = head[i]; i++;
         }
         line1[i] = '\0';
-        if (line_is_bed(line1))  return BS_BED;
         if (line_is_imap(line1)) return BS_IMAP;
     }
     return BS_UNKNOWN;

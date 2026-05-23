@@ -109,6 +109,11 @@ typedef struct {
     hts_idx_t *idx;
     char      *sample;   /* SM tag from first @RG; falls back to filename stem */
     char      *path;
+    Phasing    sample_phasing;  /* per-sample emission policy. Mirrors args->phasing
+                                 * by default; in --phasing vcf mode the VCF
+                                 * classification overrides per sample so that
+                                 * phased samples emit 2 haplotypes and unphased
+                                 * samples emit 1 IUPAC sequence. */
 } BamFile;
 
 /* Parsed command-line arguments */

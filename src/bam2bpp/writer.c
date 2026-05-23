@@ -125,7 +125,11 @@ void write_imap_file(const char *prefix,
             pop = "unknown";
         }
 
-        if (phasing == PHASE_SPLIT || phasing == PHASE_VCF) {
+        /* Use the per-sample phasing field rather than the global mode so
+         * a mixed run (some PHASE_VCF, some PHASE_IUPAC) emits the right
+         * row count per sample. */
+        Phasing p = bams[i]->sample_phasing;
+        if (p == PHASE_SPLIT || p == PHASE_VCF) {
             /* Two unique ids per individual: <sample>_1 and <sample>_2. */
             fprintf(fp, "%s_1\t%s\n", bams[i]->sample, pop);
             fprintf(fp, "%s_2\t%s\n", bams[i]->sample, pop);
@@ -133,6 +137,7 @@ void write_imap_file(const char *prefix,
             fprintf(fp, "%s\t%s\n", bams[i]->sample, pop);
         }
     }
+    (void)phasing;  /* now per-sample via BamFile.sample_phasing */
 
     fclose(fp);
     if (!g_quiet) fprintf(stderr, "Wrote Imap file: %s\n", path);
