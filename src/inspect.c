@@ -133,6 +133,39 @@ void file_info_add_warning(FileInfo *fi, const char *code, const char *severity,
     fi->n_warnings++;
 }
 
+static void file_info_remove_warning(FileInfo *fi, const char *code)
+{
+    int w = 0;
+    for (int r = 0; r < fi->n_warnings; r++) {
+        if (strcmp(fi->warnings[r].code, code) == 0) {
+            free(fi->warnings[r].code);
+            free(fi->warnings[r].severity);
+            free(fi->warnings[r].message);
+            continue;
+        }
+        if (w != r) fi->warnings[w] = fi->warnings[r];
+        w++;
+    }
+    fi->n_warnings = w;
+}
+
+int file_info_force_reference(FileInfo *fi)
+{
+    if (!fi) return -1;
+    if (fi->ft == BS_FASTA_REFERENCE) return 0;
+    if (fi->ft != BS_FASTA_MSA && fi->ft != BS_FASTA_CONTIGS) return -1;
+
+    fi->ft = BS_FASTA_REFERENCE;
+    file_info_remove_warning(fi, "ASSEMBLY_NOT_ALIGNABLE");
+
+    fi->indexed = has_companion_index(fi->path, ".fai", NULL);
+    if (!fi->indexed) {
+        file_info_add_warning(fi, "MISSING_FAI", "warning",
+            "Reference FASTA has no .fai companion. Run `samtools faidx <file>`.");
+    }
+    return 0;
+}
+
 static void free_str_array(char **a, int n)
 {
     if (!a) return;

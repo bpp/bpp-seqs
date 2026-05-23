@@ -41,6 +41,7 @@ typedef struct {
     int    quiet;
 
     char  *imap_path_arg;   /* from --imap (may overlap with positional) */
+    char  *reference_path;  /* from --reference: force this file to BS_FASTA_REFERENCE */
 
     /* Filtering / conversion options (passed to bam2bpp / converters) */
     int    min_bq;
@@ -76,6 +77,8 @@ static void print_usage(FILE *fp, const char *prog)
 "\n"
 "Input:\n"
 "  --imap FILE           Imap file (sample → population mapping)\n"
+"  --reference FILE      Designate FILE as the reference FASTA (skips the\n"
+"                        content-based REFERENCE vs CONTIGS classifier).\n"
 "\n"
 "Filtering:\n"
 "  --phasing MODE        iupac (default), split, haploid, vcf\n"
@@ -99,6 +102,7 @@ enum {
     OPT_QUIET,
     OPT_VERSION,
     OPT_IMAP,
+    OPT_REFERENCE,
     OPT_PHASING,
     OPT_PHASED_VCF,
     OPT_MIN_BQ,
@@ -119,6 +123,7 @@ static const struct option LONG_OPTS[] = {
     {"quiet",          no_argument,       NULL, OPT_QUIET},
     {"version",        no_argument,       NULL, OPT_VERSION},
     {"imap",           required_argument, NULL, OPT_IMAP},
+    {"reference",      required_argument, NULL, OPT_REFERENCE},
     {"phasing",        required_argument, NULL, OPT_PHASING},
     {"phased-vcf",     required_argument, NULL, OPT_PHASED_VCF},
     {"min-bq",         required_argument, NULL, OPT_MIN_BQ},
@@ -153,6 +158,7 @@ static void cli_free(CLI *c)
     free(c->inputs);
     free(c->out_prefix);
     free(c->imap_path_arg);
+    free(c->reference_path);
     free(c->phased_vcf);
 }
 
@@ -180,6 +186,11 @@ static int parse_cli(int argc, char **argv, CLI *c)
             case OPT_IMAP:
                 free(c->imap_path_arg);
                 c->imap_path_arg = strdup(optarg);
+                cli_push_input(c, optarg);
+                break;
+            case OPT_REFERENCE:
+                free(c->reference_path);
+                c->reference_path = strdup(optarg);
                 cli_push_input(c, optarg);
                 break;
             case OPT_PHASING:
@@ -664,6 +675,21 @@ int main(int argc, char **argv)
             for (int j = 0; j < i; j++) file_info_free(files[j]);
             free(files); cli_free(&cli);
             return 1;
+        }
+    }
+
+    /* --- Apply --reference override (force a multi-seq FASTA to REFERENCE) --- */
+    if (cli.reference_path) {
+        FileInfo *ref_fi = NULL;
+        for (int i = 0; i < cli.n_inputs; i++) {
+            if (strcmp(cli.inputs[i], cli.reference_path) == 0) { ref_fi = files[i]; break; }
+        }
+        if (!ref_fi) {
+            fprintf(stderr, "Error: --reference '%s' was not inspected (not in input list?)\n",
+                    cli.reference_path);
+        } else if (file_info_force_reference(ref_fi) != 0) {
+            fprintf(stderr, "Error: --reference '%s' is not a FASTA (detected: %s)\n",
+                    cli.reference_path, file_type_name(ref_fi->ft));
         }
     }
 

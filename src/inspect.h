@@ -151,4 +151,12 @@ void file_info_add_warning(FileInfo *fi,
                            const char *severity,
                            const char *message);
 
+/* Override a FASTA's classification to BS_FASTA_REFERENCE (e.g. in response
+ * to a CLI --reference flag). Removes any ASSEMBLY_NOT_ALIGNABLE warning the
+ * auto-classifier may have attached, and sets the .fai-indexed flag with the
+ * usual MISSING_FAI warning if the index is absent. No-op if `fi` is already
+ * BS_FASTA_REFERENCE; returns 0 if the override applied, -1 if `fi` is not a
+ * recognised FASTA type. */
+int file_info_force_reference(FileInfo *fi);
+
 #endif /* BPP_SEQS_INSPECT_H */
