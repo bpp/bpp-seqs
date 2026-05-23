@@ -1,3 +1,5 @@
+#define _POSIX_C_SOURCE 200809L
+
 #include "aln_writer.h"
 #include "converters.h"
 
@@ -5,6 +7,7 @@
 #include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
+#include <strings.h>    /* strncasecmp (POSIX, declared here not in <string.h>) */
 #include <zlib.h>
 
 /* Read whole file (possibly gzipped) into memory.  Returns NUL-terminated
