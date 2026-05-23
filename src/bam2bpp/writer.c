@@ -104,7 +104,8 @@ void write_bpp_file(const char *prefix,
 void write_imap_file(const char *prefix,
                      BamFile **bams, int n_bams,
                      const ImapEntry *imap, int n_imap,
-                     Phasing phasing)
+                     Phasing phasing,
+                     const SampleMode *modes)
 {
     char path[4096];
     snprintf(path, sizeof(path), "%s.imap", prefix);
@@ -125,7 +126,17 @@ void write_imap_file(const char *prefix,
             pop = "unknown";
         }
 
-        if (phasing == PHASE_SPLIT || phasing == PHASE_VCF) {
+        /* Decide whether to emit one or two entries for this sample.
+         * Under --phasing vcf with mixed phase status, modes[] drives it
+         * per-sample; otherwise fall back to the phasing-wide convention. */
+        int split = 0;
+        if (modes) {
+            split = (modes[i] == SAMPLE_PHASED);
+        } else {
+            split = (phasing == PHASE_SPLIT || phasing == PHASE_VCF);
+        }
+
+        if (split) {
             /* Two unique ids per individual: <sample>_1 and <sample>_2. */
             fprintf(fp, "%s_1\t%s\n", bams[i]->sample, pop);
             fprintf(fp, "%s_2\t%s\n", bams[i]->sample, pop);

@@ -150,20 +150,29 @@ static const int b4_idx[16] = {
 };
 
 /* -------------------------------------------------------------------------
- * Pass 1: BAM pileup for coverage
+ * Pass 1 (unified): BAM pileup for coverage AND IUPAC consensus.
  *
- * Fills seqs[][]: positions with depth >= min_dp get the reference base;
- * all others stay 'N'.  Variant positions will be overwritten in pass 2.
+ *   SAMPLE_PHASED samples:
+ *     positions with depth >= min_dp get the reference base in BOTH
+ *     haplotypes; variant positions will be overwritten in pass 2.
+ *   SAMPLE_IUPAC samples:
+ *     call_iupac() runs at every covered position and the result is written
+ *     to the single output sequence. Pass 2 will not touch these.
  *
- * Returns total depth across all samples and positions (for stats).
+ * seq_offset[i] is the starting index in seqs[] for sample i; the number of
+ * sequences for sample i is 2 (PHASED) or 1 (IUPAC).
+ *
+ * Returns total filtered depth across all samples and positions (for stats).
  * ---------------------------------------------------------------------- */
 
-static int64_t pass1_coverage(BamFile      **bams,
-                               int            n_bams,
-                               const Locus   *loc,
-                               const char    *ref_seq,
-                               const Args    *args,
-                               char         **seqs)   /* n_seqs = 2*n_bams */
+static int64_t pass1_unified(BamFile         **bams,
+                              int               n_bams,
+                              const SampleMode *modes,
+                              const int        *seq_offset,
+                              const Locus      *loc,
+                              const char       *ref_seq,
+                              const Args       *args,
+                              char            **seqs)
 {
     char region[1024];
     snprintf(region, sizeof(region),
@@ -208,7 +217,11 @@ static int64_t pass1_coverage(BamFile      **bams,
         int offset = pos - (int)loc->start;
 
         for (int i = 0; i < n_bams; i++) {
-            int depth = 0;
+            /* Filter and count bases for this pileup column. We need per-base
+             * counts for IUPAC samples; PHASED samples only need total depth,
+             * but the per-base loop is identical so we count for both. */
+            BaseCounts bc;
+            memset(&bc, 0, sizeof(bc));
             for (int j = 0; j < n_plp[i]; j++) {
                 const bam_pileup1_t *p = &plp[i][j];
                 if (p->is_del || p->is_refskip) continue;
@@ -216,19 +229,26 @@ static int64_t pass1_coverage(BamFile      **bams,
                 if ((int)bq < args->min_bq) continue;
                 int bidx = b4_idx[bam_seqi(bam_get_seq(p->b), p->qpos)];
                 if (bidx < 0) continue;
-                depth++;
+                bc.counts[bidx]++;
+                bc.depth++;
             }
-            total_depth += depth;
+            total_depth += bc.depth;
 
-            if (depth >= args->min_dp) {
-                /* Covered invariant position: write reference base to both
-                 * haplotypes.  Pass 2 will overwrite if a VCF record exists
-                 * at this position. */
-                char rb = ref_seq[offset];
-                seqs[2 * i][offset]     = rb;
-                seqs[2 * i + 1][offset] = rb;
+            int off = seq_offset[i];
+            if (modes[i] == SAMPLE_PHASED) {
+                if (bc.depth >= args->min_dp) {
+                    /* Covered invariant position: write reference base to
+                     * both haplotypes. Pass 2 will overwrite if a VCF record
+                     * exists here. */
+                    char rb = ref_seq[offset];
+                    seqs[off][offset]     = rb;
+                    seqs[off + 1][offset] = rb;
+                }
+            } else {
+                /* SAMPLE_IUPAC: write the IUPAC consensus from BAM pileup.
+                 * call_iupac returns 'N' when depth < min_dp. */
+                seqs[off][offset] = call_iupac(&bc, args->min_dp, args->het_freq);
             }
-            /* depth < min_dp → stays 'N' (already initialised) */
         }
     }
 
@@ -257,12 +277,14 @@ static int64_t pass1_coverage(BamFile      **bams,
  * assignment of ^1 and ^2 may be arbitrarily flipped across the boundary.
  * ---------------------------------------------------------------------- */
 
-static void pass2_vcf(VcfPhase     *vcf,
-                      int           n_bams,
-                      const int    *bam_to_vcf,   /* bam[i] → vcf column */
-                      const Locus  *loc,
-                      const Args   *args,
-                      char        **seqs)
+static void pass2_vcf(VcfPhase         *vcf,
+                      int               n_bams,
+                      const SampleMode *modes,
+                      const int        *bam_to_vcf,   /* bam[i] → vcf column, -1 if absent */
+                      const int        *seq_offset,
+                      const Locus      *loc,
+                      const Args       *args,
+                      char            **seqs)
 {
     char region[1024];
     snprintf(region, sizeof(region),
@@ -326,16 +348,19 @@ static void pass2_vcf(VcfPhase     *vcf,
         if (ploidy < 2) continue;   /* not diploid */
 
         for (int bi = 0; bi < n_bams; bi++) {
+            if (modes[bi] != SAMPLE_PHASED) continue;   /* IUPAC samples filled by pass 1 */
             int vi = bam_to_vcf[bi];
-            if (vi < 0) continue;   /* sample not in VCF */
+            if (vi < 0) continue;                        /* defensive: shouldn't happen */
+
+            int off = seq_offset[bi];
 
             /* Per-sample DP check */
             int dp = (dp_arr && vi < ndp_arr &&
                       dp_arr[vi] != bcf_int32_missing)
                      ? dp_arr[vi] : INT32_MAX;
             if (dp < args->min_dp) {
-                seqs[2 * bi][offset]     = 'N';
-                seqs[2 * bi + 1][offset] = 'N';
+                seqs[off][offset]     = 'N';
+                seqs[off + 1][offset] = 'N';
                 continue;
             }
 
@@ -345,8 +370,8 @@ static void pass2_vcf(VcfPhase     *vcf,
             /* Missing genotype */
             if (bcf_gt_is_missing(gt0) || gt0 == bcf_int32_vector_end ||
                 bcf_gt_is_missing(gt1) || gt1 == bcf_int32_vector_end) {
-                seqs[2 * bi][offset]     = 'N';
-                seqs[2 * bi + 1][offset] = 'N';
+                seqs[off][offset]     = 'N';
+                seqs[off + 1][offset] = 'N';
                 continue;
             }
 
@@ -361,18 +386,18 @@ static void pass2_vcf(VcfPhase     *vcf,
                 /* Unphased heterozygote */
                 if (args->unphased_policy == UNPHASED_IUPAC) {
                     char code = iupac_pair(base0, base1);
-                    seqs[2 * bi][offset]     = code;
-                    seqs[2 * bi + 1][offset] = code;
+                    seqs[off][offset]     = code;
+                    seqs[off + 1][offset] = code;
                 } else {
-                    seqs[2 * bi][offset]     = 'N';
-                    seqs[2 * bi + 1][offset] = 'N';
+                    seqs[off][offset]     = 'N';
+                    seqs[off + 1][offset] = 'N';
                 }
                 continue;
             }
 
             /* Phased (or homozygous): assign directly */
-            seqs[2 * bi][offset]     = base0;
-            seqs[2 * bi + 1][offset] = base1;
+            seqs[off][offset]     = base0;
+            seqs[off + 1][offset] = base1;
 
             /* Phase-block continuity check */
             if (!ps_warned && ps_arr && vi < nps_arr &&
@@ -407,39 +432,52 @@ static void pass2_vcf(VcfPhase     *vcf,
  * Public: process_locus_vcf
  * ---------------------------------------------------------------------- */
 
-int process_locus_vcf(BamFile       **bams,
-                      int             n_bams,
-                      VcfPhase       *vcf,
-                      const Locus    *loc,
-                      const char     *ref_seq,
-                      const Args     *args,
-                      LocusResult    *result,
-                      double         *mean_dp_out)
+int process_locus_vcf(BamFile         **bams,
+                      int               n_bams,
+                      const SampleMode *modes,
+                      VcfPhase         *vcf,
+                      const Locus      *loc,
+                      const char       *ref_seq,
+                      const Args       *args,
+                      LocusResult      *result,
+                      double           *mean_dp_out)
 {
     int locus_len = (int)(loc->end - loc->start);
-    int n_seqs    = 2 * n_bams;   /* always two haplotypes per sample */
 
     /* ------------------------------------------------------------------
-     * Build BAM sample → VCF column index mapping.
+     * Per-sample seq layout: PHASED samples take 2 slots (^1/^2), IUPAC
+     * samples take 1.  seq_offset[i] is the starting index in seqs[].
+     * ------------------------------------------------------------------*/
+
+    int *seq_offset = malloc(n_bams * sizeof(int));
+    if (!seq_offset) return -1;
+
+    int n_seqs = 0;
+    for (int i = 0; i < n_bams; i++) {
+        seq_offset[i] = n_seqs;
+        n_seqs += (modes[i] == SAMPLE_PHASED) ? 2 : 1;
+    }
+
+    /* ------------------------------------------------------------------
+     * Build BAM sample → VCF column index mapping (PHASED samples only).
+     * IUPAC samples leave bam_to_vcf[i] = -1 even if present in the VCF.
      * ------------------------------------------------------------------*/
 
     int *bam_to_vcf = malloc(n_bams * sizeof(int));
-    if (!bam_to_vcf) return -1;
+    if (!bam_to_vcf) { free(seq_offset); return -1; }
 
     int n_vcf_samples = bcf_hdr_nsamples(vcf->hdr);
     for (int i = 0; i < n_bams; i++) {
         bam_to_vcf[i] = -1;
+        if (modes[i] != SAMPLE_PHASED) continue;
         for (int j = 0; j < n_vcf_samples; j++) {
             if (strcmp(vcf->hdr->samples[j], bams[i]->sample) == 0) {
                 bam_to_vcf[i] = j;
                 break;
             }
         }
-        if (bam_to_vcf[i] < 0)
-            fprintf(stderr,
-                    "Warning: sample '%s' not found in VCF — "
-                    "all positions for this sample will be N\n",
-                    bams[i]->sample);
+        /* PHASED implies present in VCF (classified upstream). If absent
+         * here it's a caller bug; leave as -1 and pass2 will skip. */
     }
 
     /* ------------------------------------------------------------------
@@ -459,26 +497,30 @@ int process_locus_vcf(BamFile       **bams,
 
     for (int i = 0; i < n_bams; i++) {
         size_t slen = strlen(bams[i]->sample);
-        seq_names[2 * i]     = malloc(slen + 3);
-        seq_names[2 * i + 1] = malloc(slen + 3);
-        if (!seq_names[2 * i] || !seq_names[2 * i + 1]) goto fail;
-        sprintf(seq_names[2 * i],     "%s^1", bams[i]->sample);
-        sprintf(seq_names[2 * i + 1], "%s^2", bams[i]->sample);
+        int off = seq_offset[i];
+        if (modes[i] == SAMPLE_PHASED) {
+            seq_names[off]     = malloc(slen + 3);
+            seq_names[off + 1] = malloc(slen + 3);
+            if (!seq_names[off] || !seq_names[off + 1]) goto fail;
+            sprintf(seq_names[off],     "%s^1", bams[i]->sample);
+            sprintf(seq_names[off + 1], "%s^2", bams[i]->sample);
+        } else {
+            seq_names[off] = strdup(bams[i]->sample);
+            if (!seq_names[off]) goto fail;
+        }
     }
 
     /* ------------------------------------------------------------------
-     * Pass 1: BAM pileup → write REF at covered invariant positions.
+     * Pass 1 (unified): BAM pileup — REF for PHASED, IUPAC consensus for
+     *                                 SAMPLE_IUPAC.
+     * Pass 2 (VCF):     phased GTs overwrite variant positions for PHASED.
      * ------------------------------------------------------------------*/
 
-    int64_t total_depth = pass1_coverage(bams, n_bams, loc, ref_seq,
-                                         args, seqs);
+    int64_t total_depth = pass1_unified(bams, n_bams, modes, seq_offset,
+                                         loc, ref_seq, args, seqs);
     if (total_depth < 0) goto fail;
 
-    /* ------------------------------------------------------------------
-     * Pass 2: VCF phased GTs → overwrite variant positions.
-     * ------------------------------------------------------------------*/
-
-    pass2_vcf(vcf, n_bams, bam_to_vcf, loc, args, seqs);
+    pass2_vcf(vcf, n_bams, modes, bam_to_vcf, seq_offset, loc, args, seqs);
 
     /* ------------------------------------------------------------------
      * Fill result.
@@ -494,6 +536,7 @@ int process_locus_vcf(BamFile       **bams,
                    ? (double)total_depth / ((double)n_bams * locus_len)
                    : 0.0;
 
+    free(seq_offset);
     free(bam_to_vcf);
     return 0;
 
@@ -508,6 +551,7 @@ fail:
         for (int i = 0; i < n_seqs; i++) free(seq_names[i]);
         free(seq_names);
     }
+    free(seq_offset);
     free(bam_to_vcf);
     return -1;
 }

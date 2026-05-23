@@ -59,6 +59,16 @@ typedef enum {
     UNPHASED_IUPAC   = 1,   /* write IUPAC code to both (more data, less safe) */
 } UnphasedPolicy;
 
+/* Per-sample output mode in --phasing vcf. Lets a single run mix samples
+ * that have phased GTs in the VCF (PHASED → two haplotypes) with samples
+ * that don't (SAMPLE_IUPAC → one IUPAC sequence from BAM pileup). This is
+ * the typical layout for modern+archaic projects where archaic samples will
+ * never appear in a 1000G-style VCF. */
+typedef enum {
+    SAMPLE_PHASED = 0,   /* in VCF, fully phased → 2 seqs (^1, ^2)          */
+    SAMPLE_IUPAC  = 1,   /* not in VCF or has unphased hets → 1 IUPAC seq   */
+} SampleMode;
+
 /* -------------------------------------------------------------------------
  * Core data types
  * ---------------------------------------------------------------------- */
@@ -231,12 +241,18 @@ void write_bpp_file(const char *prefix,
 
 /*
  * Write the BPP Imap file (<prefix>.imap).
- * For PHASE_SPLIT each sample gets two entries (sample^1, sample^2).
+ *
+ * For PHASE_SPLIT every sample gets two entries (sample_1, sample_2).
+ * For PHASE_VCF: if modes != NULL, emission is per-sample (PHASED → 2,
+ *   SAMPLE_IUPAC → 1); if modes == NULL, falls back to the SPLIT-style
+ *   two-entries-each layout (legacy callers).
+ * For other phasings, one entry per sample.
  */
 void write_imap_file(const char *prefix,
                      BamFile **bams, int n_bams,
                      const ImapEntry *imap, int n_imap,
-                     Phasing phasing);
+                     Phasing phasing,
+                     const SampleMode *modes);
 
 /* Write per-locus statistics to <prefix>.stats.tsv */
 void write_stats_file(const char *prefix, const LocusStat *stats, int n);
