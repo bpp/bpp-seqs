@@ -2,6 +2,8 @@
  * vcf_phase.c  –  phased VCF + BAM coverage → haplotype sequences
  */
 
+#define _POSIX_C_SOURCE 200809L
+
 #include <stdlib.h>
 #include <string.h>
 #include <stdio.h>

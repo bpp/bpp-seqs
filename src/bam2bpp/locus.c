@@ -2,6 +2,8 @@
  * locus.c  –  BED and Imap file parsers; per-locus sequence statistics
  */
 
+#define _POSIX_C_SOURCE 200809L
+
 #include <stdlib.h>
 #include <string.h>
 #include <stdio.h>
