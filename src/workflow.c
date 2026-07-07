@@ -15,6 +15,7 @@ const char *workflow_name(WorkflowKind w)
         case WF_PHYLIP2BPP:             return "phylip2bpp";
         case WF_NEXUS2BPP:              return "nexus2bpp";
         case WF_GVCF2BPP:               return "gvcf2bpp";
+        case WF_GVCF2BPP_NEEDS_BED:     return "gvcf2bpp_needs_bed";
         case WF_VCF_NOT_RECOMMENDED:    return "vcf_not_recommended";
         case WF_ASSEMBLY_NOT_SUPPORTED: return "assembly_not_supported";
         case WF_NONE:
@@ -151,6 +152,10 @@ WorkflowDecision *workflow_decide(FileInfo **files, int n)
         d->workflow = WF_NEXUS2BPP;
     } else if (n_gvcf > 0 && n_bed > 0) {
         d->workflow = WF_GVCF2BPP;
+    } else if (n_gvcf > 0) {
+        /* gVCF present but no BED: convertible once loci are defined, exactly
+         * like a BAM without a BED (WF_BAM2BPP_NEEDS_BED). Report the gap. */
+        d->workflow = WF_GVCF2BPP_NEEDS_BED;
     } else if (n_vcf > 0 && n_bed > 0) {
         d->workflow = WF_VCF_NOT_RECOMMENDED;
     } else if (n_contigs > 0) {
@@ -168,6 +173,7 @@ WorkflowDecision *workflow_decide(FileInfo **files, int n)
         case WF_PHYLIP2BPP:
         case WF_NEXUS2BPP:
         case WF_GVCF2BPP:
+        case WF_GVCF2BPP_NEEDS_BED:
             needs_imap = 1;
             break;
         default:
@@ -187,6 +193,11 @@ WorkflowDecision *workflow_decide(FileInfo **files, int n)
         add_missing(d, "reference_fasta",
             "Reference FASTA the BAMs were aligned to, with a .fai index "
             "(produced by `samtools faidx ref.fa`).");
+    } else if (d->workflow == WF_GVCF2BPP_NEEDS_BED) {
+        add_missing(d, "bed_file",
+            "BED file defining locus intervals: chrom<TAB>start<TAB>end[<TAB>name]. "
+            "Chrom names must match the gVCF contigs; start is 0-based, end is "
+            "exclusive. Each interval becomes one BPP locus.");
     }
 
     /* Workflow-level advisories for diagnostic-only states. */

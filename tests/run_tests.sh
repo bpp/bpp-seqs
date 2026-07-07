@@ -712,6 +712,26 @@ t9() {
 }
 run "50. gvcf2bpp converts tiny gVCF fixture" t9
 
+# ── Scenario 51: bare gVCF (no BED) reports what's missing ─────────────────
+# Regression: a gVCF alone must classify as gvcf2bpp_needs_bed and enumerate
+# BOTH the missing BED (loci) and imap -- not fall through to WF_NONE with an
+# empty missing[] (which told the user nothing about the gap).
+t_gvcf_needs_bed() {
+    [[ -f "$data/tiny.g.vcf.gz" ]] || return 0                 # skip if absent
+    local out
+    out=$("$bin" --json --dry-run "$data/tiny.g.vcf.gz" 2>/dev/null) || return 1
+    python3 - "$out" <<'PY'
+import json, sys
+d = json.loads(sys.argv[1])
+assert d["status"] == "incomplete", d["status"]
+assert d["workflow"] == "gvcf2bpp_needs_bed", d["workflow"]
+assert d["ready_to_run"] is False
+items = {m["item"] for m in d["missing"]}
+assert "bed_file" in items and "imap_file" in items, items
+PY
+}
+run "51. bare gVCF reports missing bed_file + imap (gvcf2bpp_needs_bed)" t_gvcf_needs_bed
+
 # ── Summary ───────────────────────────────────────────────────────────────
 echo
 echo "Tests: $pass passed, $fail failed"
