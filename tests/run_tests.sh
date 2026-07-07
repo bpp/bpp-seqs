@@ -732,6 +732,15 @@ PY
 }
 run "51. bare gVCF reports missing bed_file + imap (gvcf2bpp_needs_bed)" t_gvcf_needs_bed
 
+# ── Scenario 52: reject abbreviated / unknown long options ────────────────
+# getopt_long would otherwise bind '--phase' to '--phased-vcf' (an unambiguous
+# abbreviation), silently mis-interpreting a wrong flag. It must be rejected.
+t_reject_abbrev() {
+    ! "$bin" --phase haploid --dry-run "$data/tiny.g.vcf.gz" >/dev/null 2>"$tmp/e" || return 1
+    grep -q "unknown option '--phase'" "$tmp/e"
+}
+run "52. abbreviated/unknown long option is rejected" t_reject_abbrev
+
 # ── Summary ───────────────────────────────────────────────────────────────
 echo
 echo "Tests: $pass passed, $fail failed"

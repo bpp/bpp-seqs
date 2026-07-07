@@ -172,9 +172,33 @@ static void cli_push_input(CLI *c, const char *path)
     c->inputs[c->n_inputs++] = strdup(path);
 }
 
+/* getopt_long silently accepts unambiguous ABBREVIATIONS of long options
+ * (e.g. '--phase' binds to '--phased-vcf'), so a mistyped or wrong flag can be
+ * misinterpreted instead of rejected. Require every '--name[=value]' token to
+ * match a known option EXACTLY; a bare '--' (end-of-options) is left alone. */
+static int reject_option_abbreviations(int argc, char **argv)
+{
+    for (int i = 1; i < argc; i++) {
+        const char *a = argv[i];
+        if (a[0] != '-' || a[1] != '-' || a[2] == '\0') continue;
+        size_t len = strcspn(a + 2, "=");
+        int exact = 0;
+        for (const struct option *o = LONG_OPTS; o->name; o++) {
+            if (strlen(o->name) == len && strncmp(a + 2, o->name, len) == 0) { exact = 1; break; }
+        }
+        if (!exact) {
+            fprintf(stderr, "Error: unknown option '--%.*s'. Run with --help for usage.\n",
+                    (int)len, a + 2);
+            return -1;
+        }
+    }
+    return 0;
+}
+
 static int parse_cli(int argc, char **argv, CLI *c)
 {
     int opt;
+    if (reject_option_abbreviations(argc, argv) != 0) return -1;
     while ((opt = getopt_long(argc, argv, "h", LONG_OPTS, NULL)) != -1) {
         switch (opt) {
             case OPT_OUT:        c->out_prefix = strdup(optarg); break;
