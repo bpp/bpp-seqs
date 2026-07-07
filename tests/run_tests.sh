@@ -741,6 +741,24 @@ t_reject_abbrev() {
 }
 run "52. abbreviated/unknown long option is rejected" t_reject_abbrev
 
+# ── Scenario 53: a bare FASTQ routes to needs_alignment_first ──────────────
+# Regression: raw reads with no reference/BED must classify as
+# needs_alignment_first (with the align-first advisory), not fall through to
+# WF_NONE/"unknown" -- the commonest "I have raw reads" case.
+t_fastq_needs_alignment() {
+    [[ -f "$data/reads_R1.fastq.gz" ]] || return 0                # skip if absent
+    local out
+    out=$("$bin" --json --dry-run "$data/reads_R1.fastq.gz" "$data/reads_R2.fastq.gz" 2>/dev/null) || return 1
+    python3 - "$out" <<'PY'
+import json, sys
+d = json.loads(sys.argv[1])
+assert d["workflow"] == "needs_alignment_first", d["workflow"]
+assert d["ready_to_run"] is False
+assert all(f["type"] == "FASTQ" for f in d["files_provided"]), "not detected as FASTQ"
+PY
+}
+run "53. bare FASTQ routes to needs_alignment_first" t_fastq_needs_alignment
+
 # ── Summary ───────────────────────────────────────────────────────────────
 echo
 echo "Tests: $pass passed, $fail failed"

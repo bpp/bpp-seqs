@@ -142,7 +142,11 @@ WorkflowDecision *workflow_decide(FileInfo **files, int n)
         d->workflow = WF_BAM2BPP_NEEDS_BED;
     } else if (n_bam > 0 && n_ref == 0 && n_bed > 0) {
         d->workflow = WF_BAM2BPP_NEEDS_REF;
-    } else if (n_fastq > 0 && n_ref > 0 && n_bed > 0) {
+    } else if (n_fastq > 0) {
+        /* Any FASTQ present means raw reads: they must be aligned to a reference
+         * before BPP conversion, whether or not a reference/BED is also given.
+         * (The old condition required ref+BED, so a bare FASTQ -- the commonest
+         * "I have raw reads" case -- fell through to WF_NONE/"unknown".) */
         d->workflow = WF_NEEDS_ALIGNMENT_FIRST;
     } else if (n_msa > 0) {
         d->workflow = WF_FASTA2BPP;
