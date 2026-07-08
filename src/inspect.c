@@ -353,11 +353,9 @@ static FileType detect_type_from_text(const char *head, int n)
     }
     /* FASTA */
     if (n >= 1 && head[0] == '>') return BS_FASTA_MSA;  /* refined later */
-    /* BED, PHYLIP, IMAP all start with a token+token pattern; BED is the most
-     * specific (chrom\tINT\tINT, three tab-separated fields), so check it
-     * first. A BED row whose chrom is numeric (e.g. "1\t0\t50000\t...") would
-     * otherwise be misread as PHYLIP because line_is_two_ints accepts
-     * trailing junk. */
+    /* BED must come before PHYLIP/IMAP because line_is_two_ints accepts
+     * trailing junk and would otherwise match BED lines whose chromosome
+     * column is purely numeric (e.g. "22\t30000000\t30001000\tname"). */
     {
         char line1[512];
         int i = 0;
@@ -367,9 +365,18 @@ static FileType detect_type_from_text(const char *head, int n)
         line1[i] = '\0';
         if (line_is_bed(line1)) return BS_BED;
         if (line_is_two_ints(line1) && i < n) {
-            /* PHYLIP: first line is two ints, then a follow-up line with content */
+            /* PHYLIP: first line is two ints, follow-up line non-empty */
             return BS_PHYLIP;
         }
+    }
+    /* IMAP (least specific — BED and PHYLIP already handled above) */
+    {
+        char line1[512];
+        int i = 0;
+        while (i < n && i < (int)sizeof(line1) - 1 && head[i] != '\n' && head[i] != '\r') {
+            line1[i] = head[i]; i++;
+        }
+        line1[i] = '\0';
         if (line_is_imap(line1)) return BS_IMAP;
     }
     return BS_UNKNOWN;

@@ -87,8 +87,7 @@ static int parse_one_locus(gzFile gz, char *carry_line, size_t carry_cap,
                 int filled = 1;
                 for (int i = 0; i < nseq; i++) if (lens[i] < nsites) { filled = 0; break; }
                 if (filled) {
-                    strncpy(carry_line, line, carry_cap - 1);
-                    carry_line[carry_cap - 1] = '\0';
+                    snprintf(carry_line, carry_cap, "%s", line);
                     break;
                 }
             }
@@ -144,8 +143,7 @@ static int parse_one_locus(gzFile gz, char *carry_line, size_t carry_cap,
                         (parsed == 2 || rest == '\n' || rest == '\r' ||
                          isspace((unsigned char)rest) || rest == '\0');
         if (is_header) {
-            strncpy(carry_line, line, carry_cap - 1);
-            carry_line[carry_cap - 1] = '\0';
+            snprintf(carry_line, carry_cap, "%s", line);
             break;
         }
         excess_lines++;

@@ -97,18 +97,30 @@ static int read_one_locus(FILE *fp, char *line, size_t cap,
         char *p = line;
         const char *seq_start = p;
         int target = row;
-        if (!finished_first_block && row < nseq) {
+        int got_name = 0;
+        if (!finished_first_block) {
             char *name_end = p;
             while (*name_end && !isspace((unsigned char)*name_end)) name_end++;
             size_t nlen = (size_t)(name_end - p);
-            if (nlen > 0) {
+            if (nlen > 0 && row < nseq) {
                 out->seq_names[row] = (char *)malloc(nlen + 1);
                 memcpy(out->seq_names[row], p, nlen);
                 out->seq_names[row][nlen] = '\0';
                 out->ids[row] = post_caret_id(out->seq_names[row]);
+                seq_start = name_end;
+                target = row;
+                got_name = 1;
+            } else if (row > 0) {
+                /* No name token in the first block → wrap continuation of
+                 * the previously named sample (per-sample multi-line layout,
+                 * e.g. the mammoth_nuclear.txt fixture BPP itself accepts).
+                 * The row cursor stays put until the next named line. */
+                seq_start = p;
+                target = (row > nseq ? nseq : row) - 1;
             }
-            seq_start = name_end;
-            target = row;
+            /* else: row==0 with no name in the first block — malformed
+             *       locus body; fall through with seq_names[0]==NULL so
+             *       the validation at the end of read_one_locus returns -2. */
         }
 
         for (const char *q = seq_start; *q && *q != '\n' && *q != '\r'; q++) {
@@ -117,8 +129,27 @@ static int read_one_locus(FILE *fp, char *line, size_t cap,
                 out->seqs[target][lens[target]++] = *q;
             }
         }
-        row++;
-        if (row >= nseq) { row = 0; finished_first_block = 1; }
+        if (got_name || finished_first_block) {
+            row++;
+            if (row >= nseq && !finished_first_block) {
+                /* End of the first batch of named lines. Disambiguate two
+                 * layouts by checking whether sample 0 has been wrapped to
+                 * completion:
+                 *   sample 0 full → per-sample wrap; keep row at nseq so
+                 *                   further nameless lines continue the
+                 *                   most-recently-named sample (nseq-1).
+                 *   sample 0 not full → PHYLIP-interleaved; flip into
+                 *                       subsequent-block mode so the next
+                 *                       nameless line targets sample 0.
+                 * A blank-line separator (the canonical interleaved form)
+                 * independently triggers the flip via the is_blank handler
+                 * above. */
+                if (lens[0] < nsites) {
+                    row = 0;
+                    finished_first_block = 1;
+                }
+            }
+        }
 
         int all_full = 1;
         for (int i = 0; i < nseq; i++) if (lens[i] < nsites) { all_full = 0; break; }

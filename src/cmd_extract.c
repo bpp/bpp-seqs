@@ -123,7 +123,8 @@ static void sel_add_range(Selection *s, const char *spec, int max_loci)
     for (char *tok = strtok(buf, ","); tok; tok = strtok(NULL, ",")) {
         int a = 0, b = 0;
         if (sscanf(tok, "%d-%d", &a, &b) == 2) {
-            if (a < 1) a = 1; if (b > max_loci) b = max_loci;
+            if (a < 1) a = 1;
+            if (b > max_loci) b = max_loci;
             for (int i = a; i <= b; i++) if (i < s->index_cap) s->index_keep[i] = 1;
         } else if (sscanf(tok, "%d", &a) == 1) {
             if (a >= 1 && a < s->index_cap) s->index_keep[a] = 1;

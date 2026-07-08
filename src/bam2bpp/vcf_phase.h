@@ -52,15 +52,10 @@ void      close_vcf_phase(VcfPhase *v);
 /*
  * process_locus_vcf()
  *
- * Two-pass locus processor for --phasing vcf mode, with per-sample mode
- * dispatch so a single locus can carry both phased haplotype pairs (for
- * samples present in the VCF) and IUPAC consensus sequences (for samples
- * absent from the VCF, e.g. archaics).
+ * Two-pass locus processor for --phasing vcf mode.
  *
- * bams[]     : one open BAM per sample (provides coverage / consensus)
+ * bams[]     : one open BAM per sample (provides coverage for non-variant sites)
  * n_bams     : number of BAMs / samples
- * modes[]    : per-sample SampleMode (SAMPLE_PHASED → 2 seqs from VCF GTs,
- *              SAMPLE_IUPAC → 1 IUPAC seq from BAM pileup)
  * vcf        : phased VCF opened with open_vcf_phase()
  * loc        : locus definition (chrom, start, end, name)
  * ref_seq    : reference bases for [loc->start, loc->end), uppercase
@@ -68,18 +63,17 @@ void      close_vcf_phase(VcfPhase *v);
  * result     : output — caller provides the LocusResult shell; function fills it
  * mean_dp_out: mean per-position BAM depth across all samples (for stats)
  *
- * Emits sum_i (modes[i]==SAMPLE_PHASED ? 2 : 1) sequences. Returns 0 on
- * success, -1 on error.
+ * Always emits 2 × n_bams sequences (one haplotype pair per sample).
+ * Returns 0 on success, -1 on error.
  */
-int process_locus_vcf(BamFile         **bams,
-                      int               n_bams,
-                      const SampleMode *modes,
-                      VcfPhase         *vcf,
-                      const Locus      *loc,
-                      const char       *ref_seq,
-                      const Args       *args,
-                      LocusResult      *result,
-                      double           *mean_dp_out);
+int process_locus_vcf(BamFile       **bams,
+                      int             n_bams,
+                      VcfPhase       *vcf,
+                      const Locus    *loc,
+                      const char     *ref_seq,
+                      const Args     *args,
+                      LocusResult    *result,
+                      double         *mean_dp_out);
 
 /* ────────────────────────────────────────────────────────────────────────
  * Whole-file phasing classification.

@@ -1,5 +1,6 @@
 #define _POSIX_C_SOURCE 200809L
 #define _DARWIN_C_SOURCE 1   /* for strcasestr on macOS */
+#define _GNU_SOURCE      1   /* for strcasestr on glibc/Linux */
 
 #include "cmd_windows.h"
 #include "inspect.h"
