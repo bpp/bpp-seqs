@@ -1,0 +1,4 @@
+ind1	popA
+ind2	popA
+ind3	popB
+ind4	popB
