@@ -815,6 +815,27 @@ t_mtdna_haploid() {
 }
 run "58. --phasing haploid on mtDNA reads -> one consensus per individual" t_mtdna_haploid
 
+# ── Scenario 59-61: cross-validation failures (common real mistakes) ───────
+_cv_field() { # files... field -> prints python-evaluated value
+    local field="${!#}"; set -- "${@:1:$(($#-1))}"
+    "$bin" --json --dry-run "$@" 2>/dev/null | python3 -c "import json,sys;print(json.load(sys.stdin)['cross_validation']$field)"
+}
+t_cv_orphan_data() {
+    [[ -f "$data/crossval/orphan_data.imap" ]] || return 0
+    [[ "$(_cv_field "$data"/mtdna_bam/*.bam "$data/chrM.fa" "$data/mtdna_bam/mtdna_loci.bed" "$data/crossval/orphan_data.imap" "['unmatched_bam_samples']")" == "['E3']" ]]
+}
+run "59. cross-val: data sample missing from Imap is reported" t_cv_orphan_data
+t_cv_orphan_imap() {
+    [[ -f "$data/crossval/orphan_imap.imap" ]] || return 0
+    [[ "$(_cv_field "$data"/mtdna_bam/*.bam "$data/chrM.fa" "$data/mtdna_bam/mtdna_loci.bed" "$data/crossval/orphan_imap.imap" "['unmatched_imap_samples']")" == "['GHOST']" ]]
+}
+run "60. cross-val: Imap sample missing from data is reported" t_cv_orphan_imap
+t_cv_chrom() {
+    [[ -f "$data/crossval/wrong_chrom.bed" ]] || return 0
+    [[ "$(_cv_field "$data"/mtdna_bam/*.bam "$data/chrM.fa" "$data/crossval/wrong_chrom.bed" "$data/mtdna.imap" "['bed_chromosomes_in_bams']")" == "False" ]]
+}
+run "61. cross-val: BED chromosome absent from BAMs is reported" t_cv_chrom
+
 # ── Summary ───────────────────────────────────────────────────────────────
 echo
 echo "Tests: $pass passed, $fail failed"
