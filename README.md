@@ -5,17 +5,42 @@ alignment format required by **BPP** (Bayesian Phylogenetics and
 Phylogeography). It detects file types from content, cross-validates the inputs,
 and either converts them or tells you exactly what is still missing.
 
-## Build
+## Install
+
+**Homebrew (macOS):**
+
+```
+brew install bpp/tap/bpp-seqs
+```
+
+**Linux (HPC):** download the static `linux-x86_64` binary from the
+[latest release](https://github.com/bpp/bpp-seqs/releases) — htslib is linked
+in, so there is no runtime dependency to load:
+
+```
+tar xzf bpp-seqs-*-linux-x86_64.tar.gz
+./bpp-seqs-*/bpp-seqs --version
+```
+
+## Build from source
 
 Requires [htslib](https://github.com/samtools/htslib). On macOS:
 `brew install htslib`. On Linux: `conda install -c bioconda htslib` or build
 from source.
 
 ```
-make           # release build
+make           # release build (dynamic htslib)
 make debug     # -g + ASan/UBSan
 make test      # run the integration suite
 make install   # install to /usr/local/bin (override with PREFIX=...)
+```
+
+For a self-contained binary, link htslib statically (this is what the release
+CI does):
+
+```
+( cd htslib && ./configure --disable-libcurl --disable-plugins && make )
+make HTSLIB_A="$PWD/htslib/libhts.a" HTSLIB_INC="$PWD/htslib"
 ```
 
 ## How it works: inspect, then convert

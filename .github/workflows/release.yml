@@ -1,0 +1,164 @@
+name: release
+
+# Triggered by pushing a tag matching v*, e.g. `git tag v0.1.0 && git push --tags`.
+# Builds ONE self-contained artifact: a Linux x86_64 binary with htslib linked
+# statically (no libhts runtime dependency), suitable for HPC clusters. macOS
+# users install from source via Homebrew (see bump-homebrew below), which is why
+# there is no prebuilt macOS binary here. Pre-release tags (containing '-', e.g.
+# v0.1.0-rc1) are auto-marked as pre-releases and skip the Homebrew bump.
+
+on:
+  push:
+    tags:
+      - 'v*'
+
+permissions:
+  contents: write
+
+env:
+  HTSLIB_VERSION: '1.21'
+
+jobs:
+  build-linux:
+    name: Build linux-x86_64 (static htslib)
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Install htslib build dependencies
+        run: |
+          sudo apt-get update
+          # zlib/bz2/lzma so the static libhts.a can decode BAM/CRAM/bgzf.
+          # No libcurl / libdeflate -> htslib builds without them, matching the
+          # default HTSLIB_STATIC_DEPS in the Makefile.
+          sudo apt-get install -y zlib1g-dev libbz2-dev liblzma-dev
+
+      - name: Build static htslib ${{ env.HTSLIB_VERSION }}
+        run: |
+          set -euo pipefail
+          V="${HTSLIB_VERSION}"
+          curl -fsSL -o "htslib-${V}.tar.bz2" \
+            "https://github.com/samtools/htslib/releases/download/${V}/htslib-${V}.tar.bz2"
+          tar xjf "htslib-${V}.tar.bz2"
+          cd "htslib-${V}"
+          ./configure --disable-libcurl --disable-plugins
+          make -j"$(nproc)"
+
+      - name: Build bpp-seqs (static)
+        run: |
+          set -euo pipefail
+          V="${HTSLIB_VERSION}"
+          make HTSLIB_A="$PWD/htslib-${V}/libhts.a" HTSLIB_INC="$PWD/htslib-${V}"
+
+      - name: Verify the binary has no libhts dependency
+        run: |
+          set -euo pipefail
+          ldd bpp-seqs || true
+          if ldd bpp-seqs | grep -q libhts; then
+            echo "ERROR: libhts is dynamically linked; static build failed." >&2
+            exit 1
+          fi
+          ./bpp-seqs --version
+
+      - name: Smoke-test the examples
+        run: |
+          set -euo pipefail
+          ( cd examples/01-fasta && \
+            ../../bpp-seqs locusA.fa locusB.fa --imap imap.txt --out /tmp/d1 && \
+            test -s /tmp/d1.txt )
+          ( cd examples/02-bam && \
+            ../../bpp-seqs ind1.bam ind2.bam ind3.bam ind4.bam ref.fa loci.bed \
+              --imap imap.txt --out /tmp/d2 && \
+            test -s /tmp/d2.txt )
+
+      - name: Stage artifact
+        shell: bash
+        run: |
+          set -euo pipefail
+          VERSION="${GITHUB_REF_NAME#v}"
+          STAGE="bpp-seqs-${VERSION}-linux-x86_64"
+          mkdir -p "$STAGE"
+          cp bpp-seqs README.md LICENSE "$STAGE/"
+          cp -r examples "$STAGE/"
+          tar -czf "${STAGE}.tar.gz" "$STAGE"
+          echo "STAGE=$STAGE" >> "$GITHUB_ENV"
+
+      - name: Upload artifact
+        uses: actions/upload-artifact@v4
+        with:
+          name: linux-x86_64
+          path: bpp-seqs-*-linux-x86_64.tar.gz
+          if-no-files-found: error
+
+  release:
+    name: Publish GitHub Release
+    needs: build-linux
+    runs-on: ubuntu-latest
+    permissions:
+      contents: write
+    steps:
+      - name: Download artifacts
+        uses: actions/download-artifact@v4
+        with:
+          path: dist
+          merge-multiple: true
+
+      - name: Compute SHA256 checksums
+        run: |
+          cd dist
+          sha256sum bpp-seqs-* > SHA256SUMS
+          cat SHA256SUMS
+
+      - name: Create / update release
+        uses: softprops/action-gh-release@v2
+        with:
+          files: |
+            dist/bpp-seqs-*
+            dist/SHA256SUMS
+          generate_release_notes: true
+          fail_on_unmatched_files: true
+
+  bump-homebrew:
+    name: Bump Homebrew formula
+    needs: release
+    runs-on: ubuntu-latest
+    # Skip pre-release tags (anything with a '-', e.g. v0.1.0-rc1).
+    if: ${{ !contains(github.ref_name, '-') }}
+    steps:
+      # The formula builds from the source tarball (depends_on "htslib"), so its
+      # sha256 is the checksum of the GitHub source archive, not the release
+      # binary. HOMEBREW_TAP_TOKEN2 is a PAT with Contents:write on
+      # bpp/homebrew-tap. Formula/bpp-seqs.rb must already exist in the tap
+      # (seeded once from packaging/bpp-seqs.rb in this repo).
+      - name: Bump formula in bpp/homebrew-tap
+        env:
+          TAP_TOKEN: ${{ secrets.HOMEBREW_TAP_TOKEN2 }}
+          TAG: ${{ github.ref_name }}
+        run: |
+          set -euo pipefail
+          VER="${TAG#v}"
+          URL="https://github.com/bpp/bpp-seqs/archive/refs/tags/${TAG}.tar.gz"
+          curl -fsSL -o src.tar.gz "$URL"
+          SHA="$(sha256sum src.tar.gz | awk '{print $1}')"
+          echo "bumping formula to ${VER} (sha256 ${SHA})"
+          git clone --depth 1 \
+            "https://x-access-token:${TAP_TOKEN}@github.com/bpp/homebrew-tap.git" tap
+          cd tap
+          python3 - "$URL" "$SHA" <<'PY'
+          import re, sys
+          url, sha = sys.argv[1], sys.argv[2]
+          path = "Formula/bpp-seqs.rb"
+          s = open(path).read()
+          s = re.sub(r'^(\s*)url ".*"$', lambda m: m.group(1) + f'url "{url}"',
+                     s, count=1, flags=re.M)
+          s = re.sub(r'sha256 "[0-9a-f]{64}"', f'sha256 "{sha}"', s, count=1)
+          open(path, "w").write(s)
+          PY
+          git config user.name  "bpp-release-bot"
+          git config user.email "release-bot@users.noreply.github.com"
+          if git diff --quiet; then
+            echo "Formula already at ${VER}; nothing to do."
+            exit 0
+          fi
+          git commit -am "bpp-seqs ${VER}"
+          git push origin HEAD:main

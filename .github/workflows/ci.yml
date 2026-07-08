@@ -1,0 +1,41 @@
+name: ci
+
+# Build + run the integration suite on every push and PR. Uses a dynamically
+# linked htslib (apt/brew) -- the static build lives in release.yml. The suite
+# needs the htslib CLI tools (bgzip/tabix) plus samtools/bcftools for a few
+# VCF/BAM fixtures.
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+
+jobs:
+  test:
+    name: Build & test (${{ matrix.os }})
+    runs-on: ${{ matrix.os }}
+    strategy:
+      fail-fast: false
+      matrix:
+        os: [ubuntu-latest, macos-14]
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Install htslib + samtools/bcftools (Linux)
+        if: runner.os == 'Linux'
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y libhts-dev samtools bcftools tabix
+
+      - name: Install htslib + samtools/bcftools (macOS)
+        if: runner.os == 'macOS'
+        run: brew install htslib samtools bcftools
+
+      - name: Build
+        run: make
+
+      - name: Version smoke check
+        run: ./bpp-seqs --version
+
+      - name: Test
+        run: make test
