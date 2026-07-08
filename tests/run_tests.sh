@@ -759,6 +759,44 @@ PY
 }
 run "53. bare FASTQ routes to needs_alignment_first" t_fastq_needs_alignment
 
+# ── Scenario 54: per-locus QC filters (condition fixtures) ─────────────────
+# The conditions/ loci exercise every locus filter with known outcomes:
+# clean/gaps/het pass; invariant->insufficient_snps, missing->high_missing,
+# short->too_short. IUPAC hets count as variation, not missing.
+t_qc_filters() {
+    [[ -d "$data/conditions" ]] || return 0
+    "$bin" --quiet --json --out "$tmp/qc" "$data"/conditions/locus_*.fa "$data/conditions/cond.imap" >/dev/null 2>&1 || return 1
+    python3 - "$tmp/qc.stats.tsv" <<'PY'
+import sys
+rows={r.split("\t")[0]:r.split("\t") for r in open(sys.argv[1]).read().splitlines()[1:]}
+def st(n): return rows[n][5]
+def why(n): return rows[n][6] if len(rows[n])>6 else ""
+assert st("locus_clean")=="passed" and st("locus_gaps")=="passed" and st("locus_het_iupac")=="passed", "clean loci should pass"
+assert st("locus_invariant")=="failed" and why("locus_invariant")=="insufficient_snps", why("locus_invariant")
+assert st("locus_missing")=="failed"  and why("locus_missing")=="high_missing", why("locus_missing")
+assert st("locus_short")=="failed"    and why("locus_short")=="too_short", why("locus_short")
+PY
+}
+run "54. per-locus QC filters fire with correct skip reasons" t_qc_filters
+
+# ── Scenario 55: --keep-invariant rescues the invariant locus ──────────────
+t_keep_invariant() {
+    [[ -d "$data/conditions" ]] || return 0
+    "$bin" --quiet --json --keep-invariant --out "$tmp/ki" "$data/conditions/locus_invariant.fa" "$data/conditions/cond.imap" >/dev/null 2>&1 || return 1
+    grep -q $'locus_invariant\t.*\tpassed' "$tmp/ki.stats.tsv"
+}
+run "55. --keep-invariant passes an invariant locus" t_keep_invariant
+
+# ── Scenario 56: VCF phasing detection (unphased vs phased) ────────────────
+t_vcf_phasing() {
+    [[ -f "$data/unphased.vcf.gz" && -f "$data/phased_snps.vcf.gz" ]] || return 0
+    local u p
+    u=$("$bin" --json --dry-run "$data/unphased.vcf.gz" 2>/dev/null | python3 -c 'import json,sys;print(json.load(sys.stdin)["files_provided"][0]["has_phase_info"])')
+    p=$("$bin" --json --dry-run "$data/phased_snps.vcf.gz" 2>/dev/null | python3 -c 'import json,sys;print(json.load(sys.stdin)["files_provided"][0]["has_phase_info"])')
+    [[ "$u" == "False" && "$p" == "True" ]]
+}
+run "56. VCF phasing detected (unphased vs phased)" t_vcf_phasing
+
 # ── Summary ───────────────────────────────────────────────────────────────
 echo
 echo "Tests: $pass passed, $fail failed"
