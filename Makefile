@@ -3,9 +3,19 @@
 # Requires htslib (https://github.com/samtools/htslib).
 #
 # Detection order for htslib:
-#   1. pkg-config --libs htslib
-#   2. HTSLIB=/path prefix override (make HTSLIB=/opt/htslib)
-#   3. Bare -lhts
+#   1. HTSLIB_A=/path/to/libhts.a  -- STATIC link (self-contained binary; used
+#                                     by the release CI). Also set HTSLIB_INC.
+#   2. pkg-config --libs htslib
+#   3. HTSLIB=/path prefix override (make HTSLIB=/opt/htslib)
+#   4. Bare -lhts
+#
+# Static build recipe (produces a binary with no libhts dependency):
+#   ( cd htslib && ./configure --disable-libcurl --disable-plugins && make )
+#   make HTSLIB_A=$PWD/htslib/libhts.a HTSLIB_INC=$PWD/htslib
+#   ldd bpp-seqs   # confirms libhts is absent
+#
+# EXTRA_CFLAGS / EXTRA_LDFLAGS are appended after the defaults (e.g. for
+# cross-compilation: make EXTRA_CFLAGS=-arch\ x86_64 EXTRA_LDFLAGS=-arch\ x86_64).
 #
 # Targets:
 #   make            release build
@@ -23,7 +33,14 @@ PREFIX  ?= /usr/local
 
 # ── htslib detection ────────────────────────────────────────────────────────
 
-ifdef HTSLIB
+# Compression/threading libs the static libhts.a needs pulled in after it.
+# Override if your htslib was configured with libdeflate or libcurl.
+HTSLIB_STATIC_DEPS ?= -lz -lbz2 -llzma -lpthread -lm
+
+ifdef HTSLIB_A
+  HTSLIB_CFLAGS := -I$(HTSLIB_INC)
+  HTSLIB_LIBS   := $(HTSLIB_A) $(HTSLIB_STATIC_DEPS)
+else ifdef HTSLIB
   HTSLIB_CFLAGS := -I$(HTSLIB)/include
   HTSLIB_LIBS   := -L$(HTSLIB)/lib -lhts -Wl,-rpath,$(HTSLIB)/lib
 else
@@ -32,7 +49,8 @@ else
 endif
 
 INCLUDES := -Isrc -Isrc/bam2bpp $(HTSLIB_CFLAGS)
-CFLAGS   += $(INCLUDES)
+CFLAGS   += $(INCLUDES) $(EXTRA_CFLAGS)
+LDFLAGS  += $(EXTRA_LDFLAGS)
 LDLIBS   := $(HTSLIB_LIBS) -lz -lm -lpthread
 
 # ── sources ────────────────────────────────────────────────────────────────
