@@ -797,6 +797,24 @@ t_vcf_phasing() {
 }
 run "56. VCF phasing detected (unphased vs phased)" t_vcf_phasing
 
+# ── Scenario 57: mtDNA (true haploid) alignment -> one seq per individual ──
+t_mtdna_fasta() {
+    [[ -f "$data/mtdna.fa" ]] || return 0
+    "$bin" --quiet --out "$tmp/mt" "$data/mtdna.fa" "$data/mtdna.imap" >/dev/null 2>&1 || return 1
+    [[ "$(grep -cE '^\^' "$tmp/mt.txt")" == "9" ]]
+}
+run "57. mtDNA alignment -> 9 haploid sequences (one per individual)" t_mtdna_fasta
+
+# ── Scenario 58: --phasing haploid on true-haploid mtDNA reads ─────────────
+# The correct use of haploid mode: mtDNA reads -> one consensus per individual.
+t_mtdna_haploid() {
+    [[ -f "$data/mtdna_bam/N1.bam" ]] || return 0
+    "$bin" --quiet --phasing haploid --out "$tmp/mh" "$data"/mtdna_bam/*.bam \
+        "$data/chrM.fa" "$data/mtdna_bam/mtdna_loci.bed" "$data/mtdna.imap" >/dev/null 2>&1 || return 1
+    [[ "$(grep -cE '^\^' "$tmp/mh.txt")" == "9" ]]
+}
+run "58. --phasing haploid on mtDNA reads -> one consensus per individual" t_mtdna_haploid
+
 # ── Summary ───────────────────────────────────────────────────────────────
 echo
 echo "Tests: $pass passed, $fail failed"
