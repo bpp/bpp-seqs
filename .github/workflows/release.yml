@@ -63,15 +63,13 @@ jobs:
         run: |
           set -euo pipefail
           file bpp-seqs
-          # A fully static binary: `ldd` reports "not a dynamic executable"
-          # (or "statically linked"), and `file` says "statically linked".
+          ldd bpp-seqs 2>&1 || true   # informational; "not a dynamic executable" expected
+          # `file` is the authoritative check: a fully static ELF says
+          # "statically linked" (a glibc-dynamic one says "dynamically linked").
           if ! file bpp-seqs | grep -q 'statically linked'; then
             echo "ERROR: binary is not statically linked; it will break on older-glibc hosts." >&2
-            ldd bpp-seqs || true
             exit 1
           fi
-          ldd bpp-seqs 2>&1 | grep -Eq 'not a dynamic executable|statically linked' \
-            || { echo "ERROR: ldd shows dynamic dependencies." >&2; ldd bpp-seqs; exit 1; }
           ./bpp-seqs --version
 
       - name: Smoke-test the examples
