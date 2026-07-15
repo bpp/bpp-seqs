@@ -28,10 +28,9 @@ jobs:
       - name: Install htslib build dependencies
         run: |
           sudo apt-get update
-          # zlib/bz2/lzma so the static libhts.a can decode BAM/CRAM/bgzf.
-          # No libcurl / libdeflate -> htslib builds without them, matching the
-          # default HTSLIB_STATIC_DEPS in the Makefile.
-          sudo apt-get install -y zlib1g-dev libbz2-dev liblzma-dev
+          # zlib/bz2/lzma (for htslib) + libc6-dev provides the static archives
+          # (.a) the fully-static (-static) link needs, including libc.a.
+          sudo apt-get install -y zlib1g-dev libbz2-dev liblzma-dev libc6-dev
 
       - name: Build static htslib ${{ env.HTSLIB_VERSION }}
         run: |
@@ -44,32 +43,35 @@ jobs:
           ./configure --disable-libcurl --disable-plugins
           make -j"$(nproc)"
 
-      - name: Build bpp-seqs (static)
+      - name: Build bpp-seqs (fully static)
         run: |
           set -euo pipefail
           V="${HTSLIB_VERSION}"
-          # Static-link htslib AND its compression deps (bz2/lzma/z) so the
-          # binary is self-contained on any glibc host. Only glibc (libc/libm/
-          # libpthread) stays dynamic. --as-needed drops the Makefile's trailing
-          # dynamic -lz once the static libz has resolved every z symbol; without
-          # it the binary would still carry a libz.so.1 NEEDED entry.
-          # (0.1.0 shipped with bz2/lzma/z dynamic -> failed on non-Debian hosts
-          #  whose soname differs, e.g. RHEL's libbz2.so.1 vs Ubuntu libbz2.so.1.0.)
+          # FULLY static (-static): bundle htslib, its compression deps
+          # (bz2/lzma/z), AND glibc, so there is no runtime dependency of any
+          # kind. This is required for HPC portability: the runner's glibc
+          # (Ubuntu 24.04 = 2.39) is NEWER than most clusters' (RHEL/Rocky), so a
+          # glibc-dynamic binary fails with "GLIBC_2.xx not found". Safe to fully
+          # static here because --disable-libcurl/--disable-plugins mean no
+          # network, NSS, or dlopen paths. -static makes every -l resolve to its
+          # .a, so no -Bstatic/-Bdynamic juggling is needed.
           make HTSLIB_A="$PWD/htslib-${V}/libhts.a" HTSLIB_INC="$PWD/htslib-${V}" \
-               HTSLIB_STATIC_DEPS="-Wl,-Bstatic -lbz2 -llzma -lz -Wl,-Bdynamic -lpthread -lm" \
-               EXTRA_LDFLAGS="-Wl,--as-needed"
+               HTSLIB_STATIC_DEPS="-lbz2 -llzma -lz -lpthread -lm" \
+               EXTRA_LDFLAGS="-static"
 
-      - name: Verify the binary is self-contained (no bundled-lib .so deps)
+      - name: Verify the binary is fully static
         run: |
           set -euo pipefail
-          ldd bpp-seqs || true
-          # Fail if htslib or ANY compression/network lib is dynamically linked;
-          # only glibc components (libc/libm/libpthread/libdl/ld-linux/vdso) are ok.
-          if ldd bpp-seqs | grep -Eiq 'libhts|libbz2|liblzma|libdeflate|libcurl|libz\.so'; then
-            echo "ERROR: a bundled dependency is dynamically linked; binary is not portable." >&2
-            ldd bpp-seqs >&2
+          file bpp-seqs
+          # A fully static binary: `ldd` reports "not a dynamic executable"
+          # (or "statically linked"), and `file` says "statically linked".
+          if ! file bpp-seqs | grep -q 'statically linked'; then
+            echo "ERROR: binary is not statically linked; it will break on older-glibc hosts." >&2
+            ldd bpp-seqs || true
             exit 1
           fi
+          ldd bpp-seqs 2>&1 | grep -Eq 'not a dynamic executable|statically linked' \
+            || { echo "ERROR: ldd shows dynamic dependencies." >&2; ldd bpp-seqs; exit 1; }
           ./bpp-seqs --version
 
       - name: Smoke-test the examples
