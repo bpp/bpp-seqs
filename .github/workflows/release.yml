@@ -48,14 +48,26 @@ jobs:
         run: |
           set -euo pipefail
           V="${HTSLIB_VERSION}"
-          make HTSLIB_A="$PWD/htslib-${V}/libhts.a" HTSLIB_INC="$PWD/htslib-${V}"
+          # Static-link htslib AND its compression deps (bz2/lzma/z) so the
+          # binary is self-contained on any glibc host. Only glibc (libc/libm/
+          # libpthread) stays dynamic. --as-needed drops the Makefile's trailing
+          # dynamic -lz once the static libz has resolved every z symbol; without
+          # it the binary would still carry a libz.so.1 NEEDED entry.
+          # (0.1.0 shipped with bz2/lzma/z dynamic -> failed on non-Debian hosts
+          #  whose soname differs, e.g. RHEL's libbz2.so.1 vs Ubuntu libbz2.so.1.0.)
+          make HTSLIB_A="$PWD/htslib-${V}/libhts.a" HTSLIB_INC="$PWD/htslib-${V}" \
+               HTSLIB_STATIC_DEPS="-Wl,-Bstatic -lbz2 -llzma -lz -Wl,-Bdynamic -lpthread -lm" \
+               EXTRA_LDFLAGS="-Wl,--as-needed"
 
-      - name: Verify the binary has no libhts dependency
+      - name: Verify the binary is self-contained (no bundled-lib .so deps)
         run: |
           set -euo pipefail
           ldd bpp-seqs || true
-          if ldd bpp-seqs | grep -q libhts; then
-            echo "ERROR: libhts is dynamically linked; static build failed." >&2
+          # Fail if htslib or ANY compression/network lib is dynamically linked;
+          # only glibc components (libc/libm/libpthread/libdl/ld-linux/vdso) are ok.
+          if ldd bpp-seqs | grep -Eiq 'libhts|libbz2|liblzma|libdeflate|libcurl|libz\.so'; then
+            echo "ERROR: a bundled dependency is dynamically linked; binary is not portable." >&2
+            ldd bpp-seqs >&2
             exit 1
           fi
           ./bpp-seqs --version
