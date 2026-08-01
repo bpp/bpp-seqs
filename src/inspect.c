@@ -1219,6 +1219,23 @@ static void parse_charset_range(const char *expr, int *start, int *end, int *str
     }
 }
 
+/* Parse a NEXUS "key = N" dimension tolerating whitespace around '=' (NEXUS
+ * tokens are whitespace-delimited, so `NTAX = 26` is valid and appears in real
+ * files, e.g. BEAST2's gopher.nex). `low` must be lowercased; returns the
+ * integer or -1 if the key is absent or not followed by '=' and a number. */
+static int nexus_dim_value(const char *low, const char *key)
+{
+    const char *p = strstr(low, key);
+    if (!p) return -1;
+    p += strlen(key);
+    while (*p && isspace((unsigned char)*p)) p++;
+    if (*p != '=') return -1;
+    p++;
+    while (*p && isspace((unsigned char)*p)) p++;
+    if (!isdigit((unsigned char)*p)) return -1;
+    return atoi(p);
+}
+
 static void inspect_nexus(const char *path, FileInfo *fi)
 {
     gzFile gz = gzopen(path, "rb");
@@ -1240,10 +1257,11 @@ static void inspect_nexus(const char *path, FileInfo *fi)
         int i; for (i = 0; i < (int)sizeof(low) - 1 && line[i]; i++) low[i] = (char)tolower((unsigned char)line[i]);
         low[i] = '\0';
 
-        /* dimensions */
+        /* dimensions (tolerate whitespace around '=', e.g. "ntax = 26") */
         char *p;
-        if ((p = strstr(low, "ntax="))) sscanf(p + 5, "%d", &ntax);
-        if ((p = strstr(low, "nchar="))) sscanf(p + 6, "%d", &nchar);
+        int dimv;
+        if ((dimv = nexus_dim_value(low, "ntax")) >= 0) ntax = dimv;
+        if ((dimv = nexus_dim_value(low, "nchar")) >= 0) nchar = dimv;
 
         /* matrix data scan for missing fraction */
         if (strstr(low, "matrix") && !in_matrix) {

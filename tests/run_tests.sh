@@ -836,6 +836,18 @@ t_cv_chrom() {
 }
 run "61. cross-val: BED chromosome absent from BAMs is reported" t_cv_chrom
 
+# ── Scenario 62: NEXUS DIMENSIONS with whitespace around '=' (regression) ───
+# Real NEXUS files (e.g. BEAST2's gopher.nex) write "NTAX = 26"; the convert
+# path used to read ntax=0 and abort with "NEXUS dimensions missing".
+t_nexus_spaced_dims() {
+    [[ -f "$data/aln_spaced.nex" ]] || return 0
+    "$bin" --quiet --min-length 50 --keep-invariant --out "$tmp/nxs" \
+        "$data/aln_spaced.nex" "$data/imap.txt" >/dev/null 2>&1 || return 1
+    [[ -f "$tmp/nxs.txt" && -f "$tmp/nxs.imap" ]] && \
+        [[ $(grep -cE '^4 [0-9]+$' "$tmp/nxs.txt") -eq 2 ]]
+}
+run "62. nexus2bpp reads DIMENSIONS with spaces around '=' (NTAX = 26)" t_nexus_spaced_dims
+
 # ── Summary ───────────────────────────────────────────────────────────────
 echo
 echo "Tests: $pass passed, $fail failed"
