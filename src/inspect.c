@@ -3,6 +3,7 @@
 #define _POSIX_C_SOURCE 200809L
 
 #include "inspect.h"
+#include "nexus.h"
 
 #include <ctype.h>
 #include <errno.h>
@@ -1202,156 +1203,43 @@ static void inspect_phylip(const char *path, FileInfo *fi)
  * NEXUS inspector
  * ───────────────────────────────────────────────────────────────────── */
 
-static void parse_charset_range(const char *expr, int *start, int *end, int *stride)
-{
-    *start = -1; *end = -1; *stride = 1;
-    /* Skip leading whitespace */
-    while (*expr == ' ' || *expr == '\t') expr++;
-    int a = 0, b = 0, s = 1;
-    if (sscanf(expr, "%d-%d\\%d", &a, &b, &s) == 3) {
-        *start = a; *end = b; *stride = s; return;
-    }
-    if (sscanf(expr, "%d-%d", &a, &b) == 2) {
-        *start = a; *end = b; *stride = 1; return;
-    }
-    if (sscanf(expr, "%d", &a) == 1) {
-        *start = a; *end = a; *stride = 1; return;
-    }
-}
-
-/* Parse a NEXUS "key = N" dimension tolerating whitespace around '=' (NEXUS
- * tokens are whitespace-delimited, so `NTAX = 26` is valid and appears in real
- * files, e.g. BEAST2's gopher.nex). `low` must be lowercased; returns the
- * integer or -1 if the key is absent or not followed by '=' and a number. */
-static int nexus_dim_value(const char *low, const char *key)
-{
-    const char *p = strstr(low, key);
-    if (!p) return -1;
-    p += strlen(key);
-    while (*p && isspace((unsigned char)*p)) p++;
-    if (*p != '=') return -1;
-    p++;
-    while (*p && isspace((unsigned char)*p)) p++;
-    if (!isdigit((unsigned char)*p)) return -1;
-    return atoi(p);
-}
-
 static void inspect_nexus(const char *path, FileInfo *fi)
 {
-    gzFile gz = gzopen(path, "rb");
-    if (!gz) {
-        file_info_add_warning(fi, "OPEN_FAILED", "error", "Could not open NEXUS file.");
+    NexusDoc d;
+    if (nexus_parse(path, &d) != 0) {
+        file_info_add_warning(fi, "NEXUS_PARSE", "warning",
+                              d.err[0] ? d.err : "Could not parse NEXUS file.");
+        nexus_free(&d);
         return;
     }
-    char line[1 << 16];
-    int ntax = 0, nchar = 0;
-    int n_charsets = 0;
-    int charset_cap = 0;
-    char **names = NULL;
-    int *starts = NULL, *ends = NULL, *strides = NULL;
-    int64_t miss = 0, tot = 0;
-    int in_matrix = 0;
 
-    while (gzgets(gz, line, sizeof(line)) != NULL) {
-        char low[1024];
-        int i; for (i = 0; i < (int)sizeof(low) - 1 && line[i]; i++) low[i] = (char)tolower((unsigned char)line[i]);
-        low[i] = '\0';
+    fi->nexus_n_sequences     = d.ntax;
+    fi->nexus_n_sites         = d.nchar;
+    fi->nexus_n_loci          = d.n_charsets ? d.n_charsets : 1;
+    fi->nexus_has_charsets    = (d.n_charsets > 0);
+    fi->nexus_missing_fraction = d.missing_fraction;
 
-        /* dimensions (tolerate whitespace around '=', e.g. "ntax = 26") */
-        char *p;
-        int dimv;
-        if ((dimv = nexus_dim_value(low, "ntax")) >= 0) ntax = dimv;
-        if ((dimv = nexus_dim_value(low, "nchar")) >= 0) nchar = dimv;
+    /* taxon labels */
+    fi->sequence_names = (char **)malloc(sizeof(char *) * (size_t)d.ntax);
+    for (int i = 0; i < d.ntax; i++) fi->sequence_names[i] = xstrdup(d.taxa[i]);
+    fi->n_sequence_names = d.ntax;
 
-        /* matrix data scan for missing fraction */
-        if (strstr(low, "matrix") && !in_matrix) {
-            in_matrix = 1;
-            continue;
+    /* charsets */
+    if (d.n_charsets > 0) {
+        fi->nexus_charset_names   = (char **)malloc(sizeof(char *) * (size_t)d.n_charsets);
+        fi->nexus_charset_starts  = (int *)malloc(sizeof(int) * (size_t)d.n_charsets);
+        fi->nexus_charset_ends    = (int *)malloc(sizeof(int) * (size_t)d.n_charsets);
+        fi->nexus_charset_strides = (int *)malloc(sizeof(int) * (size_t)d.n_charsets);
+        for (int i = 0; i < d.n_charsets; i++) {
+            fi->nexus_charset_names[i]   = xstrdup(d.cs_name[i]);
+            fi->nexus_charset_starts[i]  = d.cs_start[i];
+            fi->nexus_charset_ends[i]    = d.cs_end[i];
+            fi->nexus_charset_strides[i] = d.cs_stride[i];
         }
-        if (in_matrix) {
-            if (strchr(line, ';')) in_matrix = 0;
-            /* capture taxon name (first non-blank token) */
-            char *t = line;
-            while (*t && isspace((unsigned char)*t)) t++;
-            if (*t && *t != ';' && fi->n_sequence_names < (ntax ? ntax : 1024)) {
-                char *te = t;
-                while (*te && !isspace((unsigned char)*te) && *te != ';') te++;
-                size_t nlen = (size_t)(te - t);
-                if (nlen > 0) {
-                    /* dedupe: append only if not already present */
-                    int dup = 0;
-                    for (int j = 0; j < fi->n_sequence_names; j++) {
-                        if (strlen(fi->sequence_names[j]) == nlen &&
-                            strncmp(fi->sequence_names[j], t, nlen) == 0) { dup = 1; break; }
-                    }
-                    if (!dup) {
-                        fi->sequence_names = (char **)realloc(
-                            fi->sequence_names,
-                            sizeof(char *) * (size_t)(fi->n_sequence_names + 1));
-                        char *cp = (char *)malloc(nlen + 1);
-                        memcpy(cp, t, nlen); cp[nlen] = '\0';
-                        fi->sequence_names[fi->n_sequence_names++] = cp;
-                    }
-                }
-            }
-            /* scan sequence-like chars */
-            char *q = strchr(line, '\t');
-            if (!q) q = strchr(line, ' ');
-            if (q) {
-                for (; *q; q++) {
-                    if (isspace((unsigned char)*q) || *q == ';') continue;
-                    tot++;
-                    if (*q == '-' || *q == '?' || *q == 'N' || *q == 'n') miss++;
-                }
-            }
-        }
-
-        /* charset NAME = expr ; */
-        if ((p = strstr(low, "charset"))) {
-            const char *src = line + (p - low);
-            src += 7;
-            while (*src == ' ' || *src == '\t') src++;
-            /* capture name up to '=' or whitespace */
-            char name[128]; int ni = 0;
-            while (*src && *src != '=' && *src != ' ' && *src != '\t' && ni < (int)sizeof(name) - 1) {
-                name[ni++] = *src++;
-            }
-            name[ni] = '\0';
-            const char *eq = strchr(src, '=');
-            if (!eq) continue;
-            eq++;
-            /* range may span to ';' */
-            char expr[256]; int ei = 0;
-            while (*eq && *eq != ';' && ei < (int)sizeof(expr) - 1) expr[ei++] = *eq++;
-            expr[ei] = '\0';
-
-            int a, b, s; parse_charset_range(expr, &a, &b, &s);
-            if (n_charsets >= charset_cap) {
-                charset_cap = charset_cap ? charset_cap * 2 : 8;
-                names   = (char **)realloc(names,   sizeof(char *) * (size_t)charset_cap);
-                starts  = (int *)  realloc(starts,  sizeof(int)    * (size_t)charset_cap);
-                ends    = (int *)  realloc(ends,    sizeof(int)    * (size_t)charset_cap);
-                strides = (int *)  realloc(strides, sizeof(int)    * (size_t)charset_cap);
-            }
-            names[n_charsets]   = xstrdup(name);
-            starts[n_charsets]  = a;
-            ends[n_charsets]    = b;
-            strides[n_charsets] = s;
-            n_charsets++;
-        }
+        fi->nexus_n_charset_names = d.n_charsets;
     }
-    gzclose(gz);
 
-    fi->nexus_n_sequences      = ntax;
-    fi->nexus_n_sites          = nchar;
-    fi->nexus_n_loci           = n_charsets ? n_charsets : 1;
-    fi->nexus_has_charsets     = (n_charsets > 0);
-    fi->nexus_charset_names    = names;
-    fi->nexus_n_charset_names  = n_charsets;
-    fi->nexus_charset_starts   = starts;
-    fi->nexus_charset_ends     = ends;
-    fi->nexus_charset_strides  = strides;
-    if (tot > 0) fi->nexus_missing_fraction = (double)miss / (double)tot;
+    nexus_free(&d);
 }
 
 /* ────────────────────────────────────────────────────────────────────────

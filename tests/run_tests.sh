@@ -848,6 +848,57 @@ t_nexus_spaced_dims() {
 }
 run "62. nexus2bpp reads DIMENSIONS with spaces around '=' (NTAX = 26)" t_nexus_spaced_dims
 
+# ── Scenario 63: NEXUS [comments] stripped + single-quoted labels ───────────
+t_nexus_comments_quotes() {
+    cat > "$tmp/cq.nex" <<'EOF'
+#NEXUS
+[ leading comment
+  spanning lines ]
+BEGIN DATA;
+  DIMENSIONS NTAX=3 NCHAR=8;
+  FORMAT DATATYPE=DNA GAP=- MISSING=?;
+  MATRIX
+    Alpha          ACGTACGT   [inline comment]
+    'Beta gamma'   ACGTAAGT
+    Delta          ACGTAACT
+  ;
+END;
+EOF
+    printf 'Alpha\tP1\nBeta_gamma\tP1\nDelta\tP2\n' > "$tmp/cq.imap"
+    "$bin" --quiet --keep-invariant --min-length 4 --out "$tmp/cq" \
+        "$tmp/cq.nex" "$tmp/cq.imap" >/dev/null 2>&1 || return 1
+    # quoted 'Beta gamma' -> Beta_gamma; comments ignored; 3 sequences intact
+    grep -qE '\^Beta_gamma' "$tmp/cq.txt" && \
+    [[ $(grep -cE '^\^' "$tmp/cq.txt") -eq 3 ]] && \
+    grep -qE '\^Alpha[[:space:]]+ACGTACGT' "$tmp/cq.txt"
+}
+run "63. nexus2bpp strips [comments] and unquotes 'quoted labels'" t_nexus_comments_quotes
+
+# ── Scenario 64: INTERLEAVE + MATCHCHAR expansion ──────────────────────────
+t_nexus_interleave_matchchar() {
+    cat > "$tmp/il.nex" <<'EOF'
+#NEXUS
+BEGIN DATA;
+  DIMENSIONS NTAX=2 NCHAR=8;
+  FORMAT DATATYPE=DNA GAP=- MISSING=? MATCHCHAR=. INTERLEAVE;
+  MATRIX
+    t1  ACGT
+    t2  ....
+
+    t1  AAGT
+    t2  AACT
+  ;
+END;
+EOF
+    printf 't1\tP1\nt2\tP2\n' > "$tmp/il.imap"
+    "$bin" --quiet --keep-invariant --min-length 4 --out "$tmp/il" \
+        "$tmp/il.nex" "$tmp/il.imap" >/dev/null 2>&1 || return 1
+    # interleaved blocks concatenate; matchchar '.' in t2 block1 -> t1's ACGT
+    grep -qE '\^t1[[:space:]]+ACGTAAGT' "$tmp/il.txt" && \
+    grep -qE '\^t2[[:space:]]+ACGTAACT' "$tmp/il.txt"
+}
+run "64. nexus2bpp handles INTERLEAVE and MATCHCHAR expansion" t_nexus_interleave_matchchar
+
 # ── Summary ───────────────────────────────────────────────────────────────
 echo
 echo "Tests: $pass passed, $fail failed"

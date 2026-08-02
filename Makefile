@@ -58,6 +58,7 @@ LDLIBS   := $(HTSLIB_LIBS) -lz -lm -lpthread
 SRCS := \
   src/main.c \
   src/inspect.c \
+  src/nexus.c \
   src/cross_validate.c \
   src/workflow.c \
   src/output.c \
