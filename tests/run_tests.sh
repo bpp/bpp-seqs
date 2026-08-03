@@ -976,6 +976,30 @@ PY
 }
 run "69. multi-locus BPP-native PHYLIP gets the BPP_MULTILOCUS advisory" t_phylip_multilocus
 
+# 70: multiple single-locus NEXUS files (the one-file-per-locus convention) must
+# each become a locus -- not silently drop all but the first.
+t_nexus_multifile() {
+    for k in 1 2 3; do
+        cat > "$tmp/l$k.nex" <<EOF
+#NEXUS
+BEGIN DATA;
+  DIMENSIONS NTAX=2 NCHAR=4;
+  FORMAT DATATYPE=DNA;
+  MATRIX
+    A_1 ACG$k
+    B_1 ACGT
+  ;
+END;
+EOF
+    done
+    printf 'A_1\tP\nB_1\tQ\n' > "$tmp/mf.imap"
+    "$bin" --quiet --keep-invariant --min-length 1 --out "$tmp/mf" \
+        "$tmp/l1.nex" "$tmp/l2.nex" "$tmp/l3.nex" "$tmp/mf.imap" >/dev/null 2>&1 || return 1
+    # 3 locus headers ("2 4") in the BPP seqfile
+    [ "$(grep -cE '^ *2 +4 *$' "$tmp/mf.txt")" -eq 3 ]
+}
+run "70. multiple single-locus NEXUS files each become a locus" t_nexus_multifile
+
 # ── Summary ───────────────────────────────────────────────────────────────
 echo
 echo "Tests: $pass passed, $fail failed"
