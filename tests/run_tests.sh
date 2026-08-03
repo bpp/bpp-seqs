@@ -899,6 +899,83 @@ EOF
 }
 run "64. nexus2bpp handles INTERLEAVE and MATCHCHAR expansion" t_nexus_interleave_matchchar
 
+# ── content-based classification + validation (0.1.4) ─────────────────────
+t_control_detect() {
+    # a BPP control file must classify as CONTROL (not IMAP) with a bpp-lint hint
+    cat > "$tmp/a.ctl" <<'EOF'
+          seed = -1
+       seqfile = x.txt
+      imapfile = x.imap
+       species&tree = 2  A B
+                       3 2
+                       (A,B);
+    thetaprior = invgamma 3 0.002
+      tauprior = invgamma 3 0.04
+EOF
+    out=$("$bin" --json --dry-run "$tmp/a.ctl" 2>/dev/null) || return 1
+    python3 - "$out" <<'PY'
+import json, sys
+d = json.loads(sys.argv[1]); fp = d["files_provided"][0]
+assert fp["type"] == "CONTROL", fp["type"]
+assert any(w["code"] == "BPP_CONTROL_FILE" for w in fp["warnings"])
+PY
+}
+run "65. a BPP control file classifies as CONTROL (not IMAP) with a bpp-lint hint" t_control_detect
+
+t_control_not_imap() {
+    # a genuine 2-column imap must still be IMAP, not CONTROL (no false positive)
+    printf 'ind1 A\nind2 A\nind3 B\n' > "$tmp/g.imap"
+    out=$("$bin" --json --dry-run "$tmp/g.imap" 2>/dev/null) || return 1
+    python3 - "$out" <<'PY'
+import json, sys
+assert json.loads(sys.argv[1])["files_provided"][0]["type"] == "IMAP"
+PY
+}
+run "66. a genuine Imap still classifies as IMAP (no CONTROL false positive)" t_control_not_imap
+
+t_phylip_validation() {
+    # header says 3 seqs / 8 sites but 2 present and unequal -> error status
+    printf ' 3 8\nsA ACGTACGT\nsB ACGTA\n' > "$tmp/bad.phy"
+    out=$("$bin" --json --dry-run "$tmp/bad.phy" 2>/dev/null) || return 1
+    python3 - "$out" <<'PY'
+import json, sys
+d = json.loads(sys.argv[1]); codes = {w["code"] for w in d["files_provided"][0]["warnings"]}
+assert "PHYLIP_COUNT_MISMATCH" in codes, codes
+assert "PHYLIP_UNEQUAL_LENGTHS" in codes, codes
+assert d["status"] == "error" and d["ready_to_run"] is False
+PY
+}
+run "67. malformed PHYLIP is flagged (count/length errors, status=error)" t_phylip_validation
+
+t_phylip_illegal_dup() {
+    printf ' 2 8\nsA ACGT12GT\nsA ACGTACGT\n' > "$tmp/id.phy"
+    out=$("$bin" --json --dry-run "$tmp/id.phy" 2>/dev/null) || return 1
+    python3 - "$out" <<'PY'
+import json, sys
+codes = {w["code"] for w in json.loads(sys.argv[1])["files_provided"][0]["warnings"]}
+assert "PHYLIP_ILLEGAL_CHAR" in codes, codes
+assert "PHYLIP_DUP_NAME" in codes, codes
+PY
+}
+run "68. PHYLIP illegal characters and duplicate names are flagged" t_phylip_illegal_dup
+
+t_phylip_multilocus() {
+    # a multi-locus (BPP-native) file gets the BPP_MULTILOCUS advisory; a clean
+    # single-locus alignment does not.
+    printf '2 4\n^A ACGT\n^B ACGA\n\n2 4\n^A ACGT\n^B ACGA\n' > "$tmp/ml.txt"
+    printf ' 2 4\nsA ACGT\nsB ACGA\n' > "$tmp/one.phy"
+    o1=$("$bin" --json --dry-run "$tmp/ml.txt" 2>/dev/null) || return 1
+    o2=$("$bin" --json --dry-run "$tmp/one.phy" 2>/dev/null) || return 1
+    python3 - "$o1" "$o2" <<'PY'
+import json, sys
+ml = json.loads(sys.argv[1])["files_provided"][0]
+one = json.loads(sys.argv[2])["files_provided"][0]
+assert any(w["code"] == "BPP_MULTILOCUS" for w in ml["warnings"]), "multilocus not flagged"
+assert not any(w["code"] == "BPP_MULTILOCUS" for w in one["warnings"]), "single-locus false positive"
+PY
+}
+run "69. multi-locus BPP-native PHYLIP gets the BPP_MULTILOCUS advisory" t_phylip_multilocus
+
 # ── Summary ───────────────────────────────────────────────────────────────
 echo
 echo "Tests: $pass passed, $fail failed"

@@ -109,6 +109,7 @@ const char *file_type_name(FileType t)
         case BS_IMAP:            return "IMAP";
         case BS_PHYLIP:          return "PHYLIP";
         case BS_NEXUS:           return "NEXUS";
+        case BS_CONTROL:         return "CONTROL";
         case BS_UNKNOWN:
         default:                 return "UNKNOWN";
     }
@@ -330,6 +331,43 @@ static int line_looks_like_sequence(const char *s)
     return m * 4 >= n * 3;  /* ≥75% nucleotide characters */
 }
 
+/* case-insensitive substring search bounded to n bytes (head may not be
+ * NUL-terminated exactly at n). */
+static int ci_eq(char a, char b)
+{
+    if (a >= 'A' && a <= 'Z') a += 32;
+    if (b >= 'A' && b <= 'Z') b += 32;
+    return a == b;
+}
+static int ci_contains(const char *hay, int n, const char *needle)
+{
+    int nl = (int)strlen(needle);
+    for (int i = 0; i + nl <= n; i++) {
+        int k = 0;
+        while (k < nl && ci_eq(hay[i + k], needle[k])) k++;
+        if (k == nl) return 1;
+    }
+    return 0;
+}
+
+/* A BPP control file is `keyword = value` lines. `species&tree` is unique to
+ * them; otherwise require >=2 distinct BPP keywords so we don't misfire on an
+ * Imap or a stray "key = value" text file. Must be checked before the loose
+ * IMAP heuristic, which would otherwise match a line like "seqfile = x.txt". */
+static int looks_like_bpp_control(const char *head, int n)
+{
+    static const char *kw[] = {
+        "speciesdelimitation", "speciestree", "speciesmodelprior",
+        "thetaprior", "tauprior", "seqfile", "imapfile", "finetune",
+        "sampfreq", "burnin", "nsample", "usedata",
+    };
+    if (ci_contains(head, n, "species&tree")) return 1;
+    int hits = 0;
+    for (size_t i = 0; i < sizeof(kw) / sizeof(kw[0]); i++)
+        if (ci_contains(head, n, kw[i])) hits++;
+    return hits >= 2;
+}
+
 static FileType detect_type_from_text(const char *head, int n)
 {
     /* Look for VCF header */
@@ -370,7 +408,10 @@ static FileType detect_type_from_text(const char *head, int n)
             return BS_PHYLIP;
         }
     }
-    /* IMAP (least specific — BED and PHYLIP already handled above) */
+    /* BPP control file — must precede IMAP: a control file's "seqfile = x.txt"
+     * line satisfies the loose two-token IMAP heuristic. */
+    if (looks_like_bpp_control(head, n)) return BS_CONTROL;
+    /* IMAP (least specific — BED, PHYLIP and CONTROL already handled above) */
     {
         char line1[512];
         int i = 0;
@@ -1109,6 +1150,87 @@ static void inspect_imap(const char *path, FileInfo *fi)
  * PHYLIP inspector
  * ───────────────────────────────────────────────────────────────────── */
 
+/* Validate a (single-locus, sequential) PHYLIP matrix and flag real errors:
+ * declared-count mismatch, duplicate names, illegal characters, and length
+ * inconsistency. Length checks are applied only for the sequential one-line-
+ * per-sequence layout (the dominant case) to avoid false positives on
+ * interleaved / multi-locus files. Emits severity="error" warnings. */
+static int seq_char_legal(int c)
+{
+    /* letters (nucleotide + IUPAC ambiguity + amino acids), gaps, unknown. */
+    return isalpha(c) || c == '-' || c == '?' || c == '.' || c == '*';
+}
+static void validate_phylip(const char *path, FileInfo *fi, int nseq, int nsites,
+                            int sequential)
+{
+    gzFile gz = gzopen(path, "rb");
+    if (!gz) return;
+    char line[1 << 16];
+    if (gzgets(gz, line, sizeof(line)) == NULL) { gzclose(gz); return; }  /* header */
+
+    char **names = (char **)calloc((size_t)nseq, sizeof(char *));
+    int *lens = (int *)calloc((size_t)nseq, sizeof(int));
+    int got = 0, bad_char = 0;
+    char bad_example = 0;
+    while (got < nseq && gzgets(gz, line, sizeof(line)) != NULL) {
+        rtrim(line);
+        int empty = 1;
+        for (char *c = line; *c; c++) if (!isspace((unsigned char)*c)) { empty = 0; break; }
+        if (empty) continue;
+        char *q = line;
+        while (*q && !isspace((unsigned char)*q)) q++;
+        size_t nlen = (size_t)(q - line);
+        names[got] = (char *)malloc(nlen + 1);
+        memcpy(names[got], line, nlen); names[got][nlen] = '\0';
+        int slen = 0;
+        for (char *r = q; *r; r++) {
+            if (isspace((unsigned char)*r)) continue;
+            slen++;
+            if (!seq_char_legal((unsigned char)*r)) { bad_char++; if (!bad_example) bad_example = *r; }
+        }
+        lens[got] = slen;
+        got++;
+    }
+    gzclose(gz);
+
+    char msg[256];
+    if (got < nseq) {
+        snprintf(msg, sizeof msg,
+                 "Header declares %d sequences but only %d are present.", nseq, got);
+        file_info_add_warning(fi, "PHYLIP_COUNT_MISMATCH", "error", msg);
+    }
+    /* duplicate names */
+    for (int i = 0; i < got; i++)
+        for (int j = i + 1; j < got; j++)
+            if (names[i] && names[j] && strcmp(names[i], names[j]) == 0) {
+                snprintf(msg, sizeof msg, "Duplicate sequence name '%s'.", names[i]);
+                file_info_add_warning(fi, "PHYLIP_DUP_NAME", "error", msg);
+                i = got; break;
+            }
+    if (bad_char) {
+        snprintf(msg, sizeof msg,
+                 "Sequence data contains %d illegal character(s) (e.g. '%c').",
+                 bad_char, bad_example ? bad_example : '?');
+        file_info_add_warning(fi, "PHYLIP_ILLEGAL_CHAR", "error", msg);
+    }
+    /* length consistency — only trust it for the sequential one-line layout */
+    if (sequential && got > 0 && lens[0] > 0) {
+        int uneven = 0;
+        for (int i = 1; i < got; i++) if (lens[i] > 0 && lens[i] != lens[0]) { uneven = 1; break; }
+        if (uneven) {
+            snprintf(msg, sizeof msg,
+                     "Sequences are not all the same length (first is %d sites).", lens[0]);
+            file_info_add_warning(fi, "PHYLIP_UNEQUAL_LENGTHS", "error", msg);
+        } else if (lens[0] != nsites) {
+            snprintf(msg, sizeof msg,
+                     "Header declares %d sites but sequences have %d.", nsites, lens[0]);
+            file_info_add_warning(fi, "PHYLIP_SITES_MISMATCH", "error", msg);
+        }
+    }
+    for (int i = 0; i < got; i++) free(names[i]);
+    free(names); free(lens);
+}
+
 static void inspect_phylip(const char *path, FileInfo *fi)
 {
     gzFile gz = gzopen(path, "rb");
@@ -1196,6 +1318,34 @@ static void inspect_phylip(const char *path, FileInfo *fi)
         fi->n_sequence_names = got;
         gzclose(gz);
     }
+
+    validate_phylip(path, fi, nseq, nsites,
+                    fi->phylip_format && strcmp(fi->phylip_format, "sequential") == 0);
+
+    /* Count locus headers (lines that are EXACTLY two integers). >1 means this
+     * is a multi-locus BPP sequence file, which BPP reads directly -- flag it so
+     * callers report "already in BPP format" instead of proposing a conversion. */
+    gz = gzopen(path, "rb");
+    if (gz) {
+        int loci = 0;
+        while (gzgets(gz, line, sizeof(line)) != NULL) {
+            int a, b, extra = 0;
+            char tail[8] = {0};
+            int got_scan = sscanf(line, "%d %d %7s", &a, &b, tail);
+            if (got_scan == 2 && a > 0 && b > 0) loci++;
+            else if (got_scan == 3 && tail[0]) extra = 1;
+            (void)extra;
+        }
+        gzclose(gz);
+        fi->phylip_n_loci = loci;
+        if (loci > 1) {
+            char msg[160];
+            snprintf(msg, sizeof msg,
+                     "Multi-locus BPP sequence file (%d loci). BPP reads this "
+                     "format directly -- no conversion needed.", loci);
+            file_info_add_warning(fi, "BPP_MULTILOCUS", "info", msg);
+        }
+    }
     (void)mark_after_header;
 }
 
@@ -1268,6 +1418,11 @@ FileInfo *inspect_file(const char *path)
         case BS_IMAP:    inspect_imap(path, fi); break;
         case BS_PHYLIP:  inspect_phylip(path, fi); break;
         case BS_NEXUS:   inspect_nexus(path, fi); break;
+        case BS_CONTROL:
+            file_info_add_warning(fi, "BPP_CONTROL_FILE", "info",
+                "This is a BPP control file, not sequence data. "
+                "Validate it with bpp-lint, not bpp-seqs.");
+            break;
         case BS_GVCF:
         case BS_FASTA_REFERENCE:
         case BS_FASTA_CONTIGS:

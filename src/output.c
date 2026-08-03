@@ -442,13 +442,23 @@ void print_json(FILE *fp, int indent,
 {
     JsonWriter w; jw_init(&w, fp, indent);
     int complete = cr && cr->has_results;
-    const char *status = status_string(d, complete, 0);
+    /* Any file carrying an error/critical warning means the data isn't usable
+     * as-is: surface it at the top level so callers see one clear signal. */
+    int has_error = 0;
+    for (int i = 0; i < n_files && !has_error; i++)
+        for (int wi = 0; wi < files[i]->n_warnings; wi++) {
+            const char *sev = files[i]->warnings[wi].severity;
+            if (sev && (strcmp(sev, "error") == 0 || strcmp(sev, "critical") == 0)) {
+                has_error = 1; break;
+            }
+        }
+    const char *status = status_string(d, complete, has_error);
 
     jw_obj_open(&w);
     jw_kv_str (&w, "bpp_seqs_version", bpp_seqs_version);
     jw_kv_str (&w, "status", status);
     jw_kv_str (&w, "workflow", workflow_name(d->workflow));
-    jw_kv_bool(&w, "ready_to_run", d->ready_to_run);
+    jw_kv_bool(&w, "ready_to_run", d->ready_to_run && !has_error);
     if (d->advisory) jw_kv_str(&w, "advisory", d->advisory);
 
     jw_key(&w, "files_provided"); jw_arr_open(&w);

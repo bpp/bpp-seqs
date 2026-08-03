@@ -25,7 +25,8 @@ typedef enum {
     BS_BED,
     BS_IMAP,
     BS_PHYLIP,
-    BS_NEXUS
+    BS_NEXUS,
+    BS_CONTROL        /* a BPP control file (not sequence data) */
 } FileType;
 
 const char *file_type_name(FileType t);
@@ -124,6 +125,7 @@ typedef struct FileInfo {
     char     *phylip_format;       /* "interleaved" | "sequential" */
     int       phylip_n_sequences;
     int       phylip_n_sites;
+    int       phylip_n_loci;       /* count of locus headers; >1 => BPP-native multi-locus */
     double    phylip_missing_fraction;
 
     /* NEXUS */
