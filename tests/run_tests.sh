@@ -1051,6 +1051,23 @@ t_union_across_loci() {
 }
 run "73. sample names are collected from every locus, not just the first" t_union_across_loci
 
+# 74: BPP lets a sequence be wrapped over several indented, unnamed lines (its
+# mammoth_nuclear.txt example is written that way and bpp reads it). Those rows
+# continue the sequence above them -- they are not further taxa.
+t_wrapped_rows() {
+    printf '2 12\n\n^s1   ACGT\n      ACGT\n      ACGT\n^s2   TTGA\n      TTGA\n      TTGA\n' \
+        > "$tmp/wrap.phy"
+    printf 's1\tP\ns2\tQ\n' > "$tmp/wrap.imap"
+    out=$("$bin" --keep-invariant --min-length 1 --out "$tmp/wrap" \
+          "$tmp/wrap.phy" "$tmp/wrap.imap" 2>&1) || return 1
+    grep -q PHYLIP_DUP_NAME <<<"$out" && return 1
+    # one locus of 2 sequences, each the 12 bases joined from three rows
+    [ "$(grep -cE '^ *2 +12 *$' "$tmp/wrap.txt")" -eq 1 ] &&
+    grep -qE '\^s1[[:space:]]+ACGTACGTACGT$' "$tmp/wrap.txt" &&
+    grep -qE '\^s2[[:space:]]+TTGATTGATTGA$' "$tmp/wrap.txt"
+}
+run "74. sequences wrapped over indented rows are joined, not read as taxa" t_wrapped_rows
+
 # ── Summary ───────────────────────────────────────────────────────────────
 echo
 echo "Tests: $pass passed, $fail failed"

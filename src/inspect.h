@@ -12,6 +12,24 @@
 #include <stdint.h>
 #include <stddef.h>
 
+/* True when a PHYLIP/BPP data row continues the sequence started on the
+ * previous named row instead of introducing a new taxon.
+ *
+ * BPP lets one sequence be wrapped over several lines, with the continuations
+ * indented and carrying no name:
+ *
+ *     ^ASIAN2   GAAGGGCTTT TGTAACAGTG ...
+ *                  CAATTTTTCA ATCGGTTGAC ...
+ *                  AGGGMATT
+ *
+ * (its own mammoth_nuclear.txt example is written this way, and bpp reads it).
+ * An indented row must therefore never consume a taxon slot. Blank lines are
+ * filtered out before this is consulted. */
+static inline int phylip_row_is_continuation(const char *line)
+{
+    return line && (line[0] == ' ' || line[0] == '\t');
+}
+
 typedef enum {
     BS_UNKNOWN = 0,
     BS_BAM,

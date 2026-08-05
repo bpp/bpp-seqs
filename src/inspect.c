@@ -1171,25 +1171,45 @@ static void validate_phylip(const char *path, FileInfo *fi, int nseq, int nsites
     char **names = (char **)calloc((size_t)nseq, sizeof(char *));
     int *lens = (int *)calloc((size_t)nseq, sizeof(int));
     int got = 0, bad_char = 0;
+    int blank_since_name = 0;    /* a blank line closed the last row's block */
+    int ilv = 0;                 /* sample an interleaved block row belongs to */
     char bad_example = 0;
-    while (got < nseq && gzgets(gz, line, sizeof(line)) != NULL) {
+    while (gzgets(gz, line, sizeof(line)) != NULL) {
         rtrim(line);
         int empty = 1;
         for (char *c = line; *c; c++) if (!isspace((unsigned char)*c)) { empty = 0; break; }
-        if (empty) continue;
+        if (empty) { blank_since_name = 1; ilv = 0; continue; }
         char *q = line;
-        while (*q && !isspace((unsigned char)*q)) q++;
-        size_t nlen = (size_t)(q - line);
-        names[got] = (char *)malloc(nlen + 1);
-        memcpy(names[got], line, nlen); names[got][nlen] = '\0';
+        int indented = phylip_row_is_continuation(line);
+        /* Indented row straight after its named row = wrapped sequence; after
+         * a blank line = the next interleaved block. See phylip2bpp.c. */
+        int interleaved_row = indented && blank_since_name && got > 0;
+        int continuation    = indented && !blank_since_name && got > 0;
+        int target;
+        if (interleaved_row) {
+            target = ilv < nseq ? ilv : nseq - 1;
+            ilv++;
+        } else if (continuation) {
+            target = got - 1;
+        } else {
+            /* A further named row once every taxon is accounted for belongs to
+             * the next locus (or is stray content the caller reports on). */
+            if (got >= nseq) break;
+            while (*q && !isspace((unsigned char)*q)) q++;
+            size_t nlen = (size_t)(q - line);
+            names[got] = (char *)malloc(nlen + 1);
+            memcpy(names[got], line, nlen); names[got][nlen] = '\0';
+            target = got;
+            got++;
+            blank_since_name = 0;
+        }
         int slen = 0;
         for (char *r = q; *r; r++) {
             if (isspace((unsigned char)*r)) continue;
             slen++;
             if (!seq_char_legal((unsigned char)*r)) { bad_char++; if (!bad_example) bad_example = *r; }
         }
-        lens[got] = slen;
-        got++;
+        lens[target] += slen;
     }
     gzclose(gz);
 
@@ -1379,6 +1399,9 @@ static void inspect_phylip(const char *path, FileInfo *fi)
                 continue;
             }
             if (want <= 0) continue;                /* unnamed continuation row */
+            /* A wrapped row carries no name -- skip it rather than reading its
+             * first block of bases as a taxon. */
+            if (phylip_row_is_continuation(line)) continue;
 
             char *q = line;
             while (*q && !isspace((unsigned char)*q)) q++;

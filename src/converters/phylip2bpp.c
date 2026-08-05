@@ -57,6 +57,8 @@ static int parse_one_locus(gzFile gz, char *carry_line, size_t carry_cap,
     }
 
     int row = 0;
+    int cur_named = -1;          /* sample last introduced by an unindented row */
+    int blank_since_name = 0;    /* a blank line has closed that row's block */
     int finished_first_block = 0;
     int all_full = 0;
     int excess_chars = 0;
@@ -70,6 +72,10 @@ static int parse_one_locus(gzFile gz, char *carry_line, size_t carry_cap,
         if (empty) {
             if (row > 0) finished_first_block = 1;
             row = 0;
+            /* A blank line closes an interleaved block: indented rows after it
+             * start a new block and cycle through the samples again, rather
+             * than continuing the sample named above. */
+            blank_since_name = 1;
             continue;
         }
 
@@ -95,7 +101,16 @@ static int parse_one_locus(gzFile gz, char *carry_line, size_t carry_cap,
 
         const char *seq_start;
         int target;
-        if (!finished_first_block && row < nseq) {
+        int advance = 1;
+        if (phylip_row_is_continuation(line) && cur_named >= 0 && !blank_since_name) {
+            /* Wrapped sequential layout: an indented row that follows its
+             * named row directly keeps filling that same sample, and does not
+             * consume a taxon slot. (Indented rows *after* a blank line are an
+             * interleaved block instead, and fall through below.) */
+            seq_start = line;
+            target    = cur_named;
+            advance   = 0;
+        } else if (!finished_first_block && row < nseq) {
             char *p = line;
             char *name_end = p;
             while (*name_end && !isspace((unsigned char)*name_end)) name_end++;
@@ -108,7 +123,11 @@ static int parse_one_locus(gzFile gz, char *carry_line, size_t carry_cap,
             }
             seq_start = name_end;
             target = row;
+            cur_named = row;
+            blank_since_name = 0;
         } else {
+            /* Interleaved layout: unindented rows after the first block cycle
+             * through the samples in order. */
             seq_start = line;
             target = row;
         }
@@ -123,8 +142,10 @@ static int parse_one_locus(gzFile gz, char *carry_line, size_t carry_cap,
                 excess_chars++;
             }
         }
-        row++;
-        if (row >= nseq) { row = 0; finished_first_block = 1; }
+        if (advance) {
+            row++;
+            if (row >= nseq) { row = 0; finished_first_block = 1; }
+        }
 
         /* Check if every sample is full */
         all_full = 1;
