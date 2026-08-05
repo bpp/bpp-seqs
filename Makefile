@@ -48,9 +48,13 @@ else
   HTSLIB_LIBS   := $(shell pkg-config --libs   htslib 2>/dev/null || echo "-lhts")
 endif
 
-INCLUDES := -Isrc -Isrc/bam2bpp $(HTSLIB_CFLAGS)
+INCLUDES := -Isrc -Isrc/bam2bpp -Isrc/vendor -Isrc/vendor/samtools $(HTSLIB_CFLAGS)
 CFLAGS   += $(INCLUDES) $(EXTRA_CFLAGS)
 LDFLAGS  += $(EXTRA_LDFLAGS)
+
+# Same as CFLAGS but without the strict warning set, for vendored third-party
+# code we deliberately keep unmodified.
+CFLAGS_VENDOR := $(filter-out $(WARN),$(CFLAGS))
 LDLIBS   := $(HTSLIB_LIBS) -lz -lm -lpthread
 
 # ── sources ────────────────────────────────────────────────────────────────
@@ -76,7 +80,10 @@ SRCS := \
   src/converters/fasta2bpp.c \
   src/converters/phylip2bpp.c \
   src/converters/nexus2bpp.c \
-  src/converters/gvcf2bpp.c
+  src/converters/gvcf2bpp.c \
+  src/vendor/samtools_consensus.c \
+  src/vendor/samtools/consensus_pileup.c \
+  src/vendor/samtools/bam_plbuf.c
 
 OBJS := $(SRCS:.c=.o)
 BIN  := bpp-seqs
@@ -98,6 +105,14 @@ $(BIN): $(OBJS)
 # header edit rebuilds everything that includes it. Without this a change to
 # a struct in a header relinks stale objects compiled against the old layout,
 # producing a binary that misbehaves in ways no source inspection explains.
+# Vendored samtools sources are upstream verbatim and are not warning-clean
+# under our flags (-Wall -Wextra -Wpedantic). Compile them without those so
+# a sync never has to touch the code to keep the build quiet; our own sources
+# stay strict. Must precede the generic %.o rule: make takes the first
+# matching pattern, not the most specific. See src/vendor/samtools/README.md.
+src/vendor/samtools/%.o: src/vendor/samtools/%.c
+	$(CC) $(CFLAGS_VENDOR) -MMD -MP -c -o $@ $<
+
 %.o: %.c
 	$(CC) $(CFLAGS) -MMD -MP -c -o $@ $<
 

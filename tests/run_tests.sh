@@ -1191,6 +1191,93 @@ t_no_override_without_vcf() {
 }
 run "83. the override report stays quiet without --phasing vcf" t_no_override_without_vcf
 
+# ── Vendored samtools consensus caller: oracle tests ──────────────────────
+#
+# src/vendor/samtools/ holds samtools' consensus model verbatim. The whole
+# point of vendoring rather than reimplementing is that samtools itself can be
+# used as an oracle: given the same options, our wrapper must produce the same
+# bases, byte for byte. These skip (rather than fail) when samtools is absent
+# or is not the pinned version, since only that version is guaranteed to agree.
+
+PINNED_SAMTOOLS=1.23.1
+oracle_bin="$tmp/consensus_oracle"
+
+oracle_available() {
+    command -v samtools >/dev/null 2>&1 || return 1
+    [ "$(samtools --version 2>/dev/null | head -1 | awk '{print $2}')" = "$PINNED_SAMTOOLS" ] || return 1
+    # Needs indexed BAMs with real depth; the committed fixtures are enough.
+    [ -s "$data/ind1.bam" ] || return 1
+    if [ ! -x "$oracle_bin" ]; then
+        cc -o "$oracle_bin" "$here/consensus_oracle.c" \
+           "$root/src/vendor/samtools_consensus.c" \
+           "$root/src/vendor/samtools/consensus_pileup.c" \
+           "$root/src/vendor/samtools/bam_plbuf.c" \
+           -I"$root/src/vendor" -I"$root/src/vendor/samtools" \
+           $(pkg-config --cflags htslib 2>/dev/null) \
+           -O2 -std=c11 -D_GNU_SOURCE \
+           $(pkg-config --libs htslib 2>/dev/null || echo -lhts) \
+           -lz -lm -lpthread >/dev/null 2>&1 || return 1
+    fi
+    [ -x "$oracle_bin" ]
+}
+
+# Compare our wrapper against samtools over one region/parameter combination.
+# del_char is '*' so the model is compared directly, without our remapping.
+#
+# Our BEG/END are 0-based half-open (BED convention); samtools' -r is 1-based
+# inclusive, hence the -1 on the end. BEG must be >= 1: position 0 cannot be
+# named on samtools' command line at all, so a region starting there is simply
+# not comparable -- it is a limit of the oracle, not a difference in output.
+oracle_matches() {   # $1=bam $2=chrom $3=beg $4=end $5=cutoff $6=min_depth
+    "$oracle_bin" "$1" "$2" "$3" "$4" "$5" "$6" '*' 2>/dev/null \
+        | tail -n +2 | tr -d '\n' > "$tmp/oracle_ours.txt" || return 1
+    samtools consensus -A -a --show-ins no --show-del yes \
+        -C "$5" -d "$6" -r "$2:$3-$(($4 - 1))" "$1" 2>/dev/null \
+        | tail -n +2 | tr -d '\n' > "$tmp/oracle_theirs.txt" || return 1
+    [ -s "$tmp/oracle_theirs.txt" ] || return 1
+    cmp -s "$tmp/oracle_ours.txt" "$tmp/oracle_theirs.txt"
+}
+
+# 84: the vendored model reproduces samtools exactly at default settings.
+t_oracle_default() {
+    oracle_available || return 0
+    oracle_matches "$data/ind1.bam" chr1 1 2500 10 1
+}
+run "84. vendored consensus matches samtools consensus -A (defaults)" t_oracle_default
+
+# 85: ... and across cutoff / min-depth settings, which select different
+# branches of the emit logic (N-masking by quality vs by depth).
+t_oracle_params() {
+    oracle_available || return 0
+    for spec in "0 1" "20 5" "30 10"; do
+        set -- $spec
+        oracle_matches "$data/ind1.bam" chr1 1 2500 "$1" "$2" || return 1
+    done
+    return 0
+}
+run "85. vendored consensus matches samtools across cutoff/depth settings" t_oracle_params
+
+# 86: ... and for every fixture sample, not just one.
+t_oracle_samples() {
+    oracle_available || return 0
+    for s in ind1 ind2 ind3 ind4; do
+        [ -s "$data/$s.bam" ] || continue
+        oracle_matches "$data/$s.bam" chr1 1 2500 10 1 || return 1
+    done
+    return 0
+}
+run "86. vendored consensus matches samtools for every sample" t_oracle_samples
+
+# 87: the wrapper returns exactly the requested span, in reference
+# coordinates, so per-locus columns line up across samples without alignment.
+t_oracle_length() {
+    oracle_available || return 0
+    n=$("$oracle_bin" "$data/ind1.bam" chr1 100 1100 10 1 2>/dev/null \
+        | tail -n +2 | tr -d '\n' | wc -c | tr -d ' ')
+    [ "$n" -eq 1000 ]
+}
+run "87. vendored consensus returns exactly the requested reference span" t_oracle_length
+
 # ── Summary ───────────────────────────────────────────────────────────────
 echo
 echo "Tests: $pass passed, $fail failed"
