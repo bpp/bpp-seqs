@@ -32,6 +32,9 @@ static void print_help(FILE *fp)
 "  --range A-B[,C-D]        keep loci by 1-based index (1 = first locus)\n"
 "  --first N                keep the first N loci\n"
 "  --last N                 keep the last N loci\n"
+"                           (--range/--first/--last index positions in the\n"
+"                           INPUT file, not positions within another filter's\n"
+"                           result; they union with each other)\n"
 "  --chrom NAME             keep loci whose source_chrom == NAME\n"
 "                           (requires <INPUT>.loci.tsv or --loci-tsv)\n"
 "  --min-sites N            keep loci with n_sites >= N\n"
@@ -45,7 +48,15 @@ static void print_help(FILE *fp)
 "Other:\n"
 "  --json                   emit JSON summary on stdout\n"
 "  --quiet                  suppress stderr progress\n"
-"  -h, --help               this message\n");
+"  -h, --help               this message\n"
+"\n"
+"Outputs:\n"
+"  PREFIX.txt               the subset BPP sequence file\n"
+"  PREFIX.loci.tsv          provenance for the kept loci (if input had one)\n"
+"  PREFIX.imap              copied from the input's Imap (if one was found)\n"
+"\n"
+"Example: every chr1 locus with at least 500 sites\n"
+"  bpp-seqs extract run1.txt --chrom chr1 --min-sites 500 --out subset\n");
 }
 
 /* ────────────────────────────────────────────────────────────────────────

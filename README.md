@@ -61,6 +61,10 @@ bpp-seqs [options] file1 file2 ...
 
 Files may be given in any order; type is detected from content, not extension.
 
+Two subcommands sit alongside this flow: `bpp-seqs windows` builds a BED of
+candidate loci when you don't have one, and `bpp-seqs extract` subsets an
+already-converted BPP file. See [Subcommands](#subcommands).
+
 ## Input formats and the workflow each selects
 
 | Inputs you provide | Workflow | Still needs |
@@ -108,18 +112,67 @@ How diploid genotype calls become sequences (the `--phasing` flag — this is
 
 ## Options
 
-```
-General:   --out PREFIX  --dry-run  --json  --json-indent N  --quiet  --version  -h/--help
-Input:     --imap FILE   --reference FILE
-Phasing:   --phasing MODE   --phased-vcf FILE
-Filtering: --min-bq 20  --min-mq 20  --min-dp 5  --het-freq 0.20
-           --min-length 100  --max-missing 0.5  --min-snps 1  --keep-invariant
-```
+Unknown or abbreviated long options are rejected (exact match only), so a
+mistyped flag is an error, not a silent no-op. `bpp-seqs --help` prints the same
+list.
 
-`--reference FILE` forces a FASTA to be treated as the reference (skipping the
-content-based reference-vs-contigs classifier). Run `bpp-seqs --help` for the
-authoritative list and defaults. Unknown or abbreviated long options are
-rejected (exact match only), so a mistyped flag is an error, not a silent no-op.
+### General
+
+| Option | Meaning |
+|--------|---------|
+| `--out PREFIX` | Output file prefix; required for conversion |
+| `--dry-run` | Inspect only; never convert |
+| `--json` | Emit JSON on stdout instead of human-readable text |
+| `--json-indent N` | JSON indentation width [2] |
+| `--quiet` | Suppress stderr progress messages |
+| `-h`, `--help` | Show help and exit |
+| `--version` | Show version and exit |
+
+### Input
+
+| Option | Meaning |
+|--------|---------|
+| `--imap FILE` | Imap file (sample → population mapping) |
+| `--reference FILE` | Force FILE to be treated as the reference FASTA, skipping the content-based reference-vs-contigs classifier |
+
+### Phasing
+
+Applies to BAM/CRAM and gVCF input; alignment inputs (FASTA MSA / PHYLIP /
+NEXUS) are already resolved sequences and ignore it.
+
+| Option | Meaning |
+|--------|---------|
+| `--phasing MODE` | `iupac` (default), `split`, `haploid`, or `vcf` — see [Phasing](#phasing---phasing) above |
+| `--phased-vcf FILE` | Phased VCF supplying true phase for `--phasing vcf` |
+
+### Base/read filtering
+
+Applied while piling up reads, so these affect **BAM/CRAM input only**. They are
+accepted but ignored for gVCF and alignment inputs.
+
+| Option | Default | Meaning |
+|--------|---------|---------|
+| `--min-bq INT` | 20 | Minimum base quality for a read base to count |
+| `--min-mq INT` | 20 | Minimum mapping quality for a read to count |
+| `--min-dp INT` | 5 | Minimum depth to call a base (below this → `N`) |
+| `--het-freq FLOAT` | 0.20 | Minor-allele frequency threshold for a heterozygote call |
+
+### Locus filtering
+
+Applied by every conversion workflow.
+
+| Option | Default | Meaning |
+|--------|---------|---------|
+| `--min-length INT` | 100 | Minimum locus length in bp |
+| `--max-missing FLOAT` | 0.5 | Maximum fraction of `N` per locus |
+| `--min-snps INT` | 1 | Minimum segregating sites per locus |
+| `--keep-invariant` | off | Keep loci with no variation |
+
+### Exit status
+
+`0` on success — including an inspection that reports missing items, since
+`incomplete` is a usable answer, not an error. `1` on a conversion or system
+error.
 
 ## Output
 
@@ -164,4 +217,87 @@ bpp-seqs --out run2 --phasing haploid cohort.g.vcf.gz loci.bed samples.imap
 
 # Aligned FASTA loci straight to BPP
 bpp-seqs --out run3 locus_*.fa samples.imap
+```
+
+## Subcommands
+
+Two verbs sit alongside the main inspect/convert flow. Each takes its own
+options; run `bpp-seqs VERB --help` for the authoritative list.
+
+### `bpp-seqs windows` — build a BED of candidate loci
+
+Tiles a genome with fixed-size windows and writes them as a BED, for when you
+have BAM/CRAM or gVCF input but no locus definitions yet. `INPUT` may be a
+reference FASTA, a BAM/CRAM, or a VCF/gVCF — anything carrying chromosome names
+and lengths.
+
+```
+bpp-seqs windows INPUT --window-size W [filters] --out OUT.bed
+```
+
+| Option | Meaning |
+|--------|---------|
+| `--window-size W` | Locus size in bp (required) |
+| `--out FILE` | Output BED path; `-` writes to stdout (required) |
+| `--step S` | Stride between window starts [window-size, i.e. non-overlapping] |
+| `--include-chrom NAME[,…]` | Only consider these chromosomes |
+| `--exclude-chrom NAME[,…]` | Skip these chromosomes |
+| `--autosomes-only` | Skip sex chromosomes, mitochondria, and unplaced / random / alt / decoy contigs by name heuristic |
+| `--skip-edges N` | Drop the first and last N bp of every chromosome |
+| `--exclude-regions FILE` | Subtract the intervals in this BED before windowing |
+| `--min-spacing G` | Require ≥ G bp between consecutive kept windows on a chromosome |
+| `--n-loci N` | Randomly sample N windows from the survivors (omit to keep all) |
+| `--seed S` | Seed for that sampling [0] |
+| `--json` | Emit a JSON summary on stdout in addition to the BED |
+| `-h`, `--help` | Show help and exit |
+
+Filters apply in the order listed. Output is a 4-column BED (chrom, 0-based
+start, exclusive end, `locusN`), ready to pass straight back in as loci.
+
+```sh
+# 500 windows of ~500 bp, ≥10 kb apart, autosomes only, edges skipped
+bpp-seqs windows ref.fa --window-size 500 --min-spacing 10000 \
+                 --n-loci 500 --autosomes-only --skip-edges 100000 \
+                 --seed 42 --out loci.bed
+```
+
+### `bpp-seqs extract` — subset an existing BPP file
+
+Reads a BPP sequence file and writes a new one holding a subset of its loci. A
+sibling `<INPUT>.loci.tsv` (if present) supplies source coordinates and is
+filtered to the same subset; `<INPUT>.imap` is copied through unchanged.
+
+```
+bpp-seqs extract INPUT.txt --out PREFIX [selection ...]
+```
+
+| Option | Meaning |
+|--------|---------|
+| `--out PREFIX` | Output file prefix (required) |
+| `--loci NAME[,…]` | Keep these locus names (union with `--loci-file`) |
+| `--loci-file FILE` | One locus name per line |
+| `--range A-B[,C-D]` | Keep loci by 1-based index (1 = first locus) |
+| `--first N` | Keep the first N loci |
+| `--last N` | Keep the last N loci |
+| `--chrom NAME` | Keep loci whose `source_chrom` is NAME (needs a `.loci.tsv`) |
+| `--min-sites N` | Keep loci with `n_sites` ≥ N |
+| `--max-sites N` | Keep loci with `n_sites` ≤ N |
+| `--invert` | Keep the loci *not* matching the selection |
+| `--imap FILE` | Use this Imap instead of `<INPUT>.imap` |
+| `--loci-tsv FILE` | Use this provenance instead of `<INPUT>.loci.tsv` |
+| `--json` | Emit a JSON summary on stdout |
+| `--quiet` | Suppress stderr progress |
+| `-h`, `--help` | Show help and exit |
+
+At least one selection is required, and the different kinds compose with AND.
+`--range`, `--first`, and `--last` union with each other, and index positions in
+the **input** file — not positions within some other filter's result. Writes
+`PREFIX.txt`, plus `PREFIX.loci.tsv` and `PREFIX.imap` when those sidecars exist.
+
+```sh
+# Every chr1 locus with at least 500 sites
+bpp-seqs extract run1.txt --chrom chr1 --min-sites 500 --out subset
+
+# A quick 50-locus test set
+bpp-seqs extract run1.txt --first 50 --out smoke
 ```
