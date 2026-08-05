@@ -105,6 +105,12 @@ typedef struct FileInfo {
     int64_t   length_mean;
     int64_t   length_n50;
     int       has_n_runs;
+    /* Per-contig name+length read from the companion .fai, when there is one.
+     * Lets a BAM's @SQ lengths be checked against the reference it is paired
+     * with -- two builds of the same assembly share contig names but differ in
+     * length, so names alone cannot tell them apart. */
+    SeqRef   *fasta_refs;
+    int       n_fasta_refs;
 
     /* VCF / GVCF */
     int       n_samples;

@@ -30,4 +30,12 @@ typedef struct {
 CrossValidation *cross_validate(FileInfo **files, int n);
 void              cross_validation_free(CrossValidation *cv);
 
+/* Count issues whose code names an input pairing that cannot be reconciled:
+ * reads aligned to a reference other than the one supplied, or a set of
+ * BAMs aligned to different references as each other. Converting under either
+ * would emit sequences whose coordinates mean nothing, so callers refuse.
+ * Other error-severity issues (a missing BED chromosome, say) still only
+ * warn -- they narrow the output rather than invalidate it. */
+int cross_validation_n_blocking(const CrossValidation *cv);
+
 #endif /* BPP_SEQS_CROSS_VALIDATE_H */

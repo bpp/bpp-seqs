@@ -94,8 +94,14 @@ debug: $(BIN)
 $(BIN): $(OBJS)
 	$(CC) $(CFLAGS) -o $@ $^ $(LDFLAGS) $(LDLIBS)
 
+# -MMD -MP writes a .d file of header dependencies beside each object, so a
+# header edit rebuilds everything that includes it. Without this a change to
+# a struct in a header relinks stale objects compiled against the old layout,
+# producing a binary that misbehaves in ways no source inspection explains.
 %.o: %.c
-	$(CC) $(CFLAGS) -c -o $@ $<
+	$(CC) $(CFLAGS) -MMD -MP -c -o $@ $<
+
+-include $(OBJS:.o=.d)
 
 test: $(BIN)
 	./tests/run_tests.sh
@@ -105,4 +111,4 @@ install: $(BIN)
 	install -m 755 $(BIN) $(DESTDIR)$(PREFIX)/bin/$(BIN)
 
 clean:
-	rm -f $(OBJS) $(BIN)
+	rm -f $(OBJS) $(OBJS:.o=.d) $(BIN)

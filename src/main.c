@@ -113,6 +113,12 @@ static void print_usage(FILE *fp, const char *prog)
 "  PREFIX.stats.tsv      per-locus statistics\n"
 "  PREFIX.loci.tsv       the locus table\n"
 "\n"
+"Safeguards: reads aligned to a different reference than the one supplied, or\n"
+"BAMs aligned to different references as each other, are detected by comparing\n"
+"contig lengths (not just names -- assembly builds share contig names). Either\n"
+"reports REFERENCE_MISMATCH, refuses to convert, and exits non-zero; --dry-run\n"
+"still inspects.\n"
+"\n"
 "Exit status: 0 on success (including an inspection reporting missing items),\n"
 "1 on a conversion or system error. Long options must match exactly;\n"
 "abbreviations are rejected.\n",
@@ -788,9 +794,24 @@ int main(int argc, char **argv)
     ConversionResult cr; conversion_result_init(&cr);
     int conversion_attempted = 0;
     int conversion_rc = 0;
-    if (!cli.dry_run && d->ready_to_run) {
+    int n_blocking = cross_validation_n_blocking(cv);
+    if (!cli.dry_run && d->ready_to_run && n_blocking > 0) {
+        /* The inputs disagree about which reference they describe. Any
+         * sequences written now would carry coordinates that do not mean what
+         * they say, so stop rather than hand back plausible-looking output. */
+        fprintf(stderr,
+            "Error: refusing to convert -- %d reference-consistency %s below.\n"
+            "       The reads and the reference (or the BAMs and each other) were not\n"
+            "       aligned to the same assembly. Supply the reference the reads were\n"
+            "       aligned to, or re-align the reads. Re-run with --dry-run to inspect\n"
+            "       without converting.\n",
+            n_blocking, n_blocking == 1 ? "error is reported" : "errors are reported");
+        conversion_attempted = 1;
+        conversion_rc = 1;
+    } else if (!cli.dry_run && d->ready_to_run) {
         if (!cli.out_prefix) {
             fprintf(stderr, "Error: --out PREFIX is required for conversion.\n");
+            conversion_attempted = 1;
             conversion_rc = 1;
         } else {
             FileInfo *imap_fi = find_by_type(files, cli.n_inputs, BS_IMAP);

@@ -172,6 +172,55 @@ CrossValidation *cross_validate(FileInfo **files, int n)
         }
     }
 
+    /* 3a. BAM/CRAM @SQ vs the reference FASTA, by contig LENGTH.
+     *
+     * Two builds of the same assembly share contig names but differ in length
+     * (GRCh37 chr22 is 51,304,566 bp, GRCh38 chr22 is 50,818,468), so matching
+     * names prove nothing. Reads aligned against one build and piled up over
+     * another give coordinates that silently point at the wrong bases, so a
+     * length disagreement on a shared contig is an error, not a warning.
+     *
+     * Only contigs present in both are compared: a BAM sliced out of a
+     * whole-genome alignment legitimately keeps all its @SQ lines while the
+     * reference to hand is a single chromosome. */
+    if (ref_fa && first_bam && ref_fa->n_fasta_refs > 0) {
+        int shared = 0;
+        for (int i = 0; i < first_bam->n_seq_refs; i++) {
+            const SeqRef *sq = &first_bam->seq_refs[i];
+            if (!sq->name) continue;
+            for (int j = 0; j < ref_fa->n_fasta_refs; j++) {
+                const SeqRef *fa = &ref_fa->fasta_refs[j];
+                if (!fa->name || strcmp(sq->name, fa->name) != 0) continue;
+                shared++;
+                if (sq->length != fa->length) {
+                    cv->bam_reference_matches_fasta = 0;
+                    char msg[512];
+                    snprintf(msg, sizeof(msg),
+                        "Contig '%s' is %lld bp in the BAM/CRAM @SQ header but %lld bp "
+                        "in reference '%s'. The reads were aligned to a different "
+                        "reference, so their coordinates do not describe this one.",
+                        sq->name, (long long)sq->length, (long long)fa->length,
+                        ref_fa->path);
+                    add_issue(cv, "REFERENCE_MISMATCH", "error", first_bam->path, msg);
+                }
+                break;
+            }
+        }
+        /* No contig name in common at all is a different failure: the pairing
+         * is wrong outright, or the two use different naming conventions
+         * ("chr22" vs "22"). */
+        if (shared == 0) {
+            cv->bam_reference_matches_fasta = 0;
+            char msg[512];
+            snprintf(msg, sizeof(msg),
+                "No contig name is shared between the BAM/CRAM @SQ headers and "
+                "reference '%s'. Check that this is the reference the reads were "
+                "aligned to, and that both use the same contig naming (e.g. "
+                "'chr22' vs '22').", ref_fa->path);
+            add_issue(cv, "REFERENCE_MISMATCH", "error", first_bam->path, msg);
+        }
+    }
+
     /* 3b. BED chromosomes in VCF/gVCF ##contig list */
     FileInfo *vcf = NULL;
     for (int i = 0; i < n; i++) {
@@ -271,6 +320,19 @@ CrossValidation *cross_validate(FileInfo **files, int n)
     }
 
     return cv;
+}
+
+int cross_validation_n_blocking(const CrossValidation *cv)
+{
+    if (!cv) return 0;
+    int n = 0;
+    for (int i = 0; i < cv->n_issues; i++) {
+        const char *c = cv->issues[i].code;
+        if (!c) continue;
+        if (strcmp(c, "REFERENCE_MISMATCH") == 0 ||
+            strcmp(c, "BAM_REF_INCONSISTENT") == 0) n++;
+    }
+    return n;
 }
 
 void cross_validation_free(CrossValidation *cv)

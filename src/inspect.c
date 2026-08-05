@@ -151,6 +151,34 @@ static void file_info_remove_warning(FileInfo *fi, const char *code)
     fi->n_warnings = w;
 }
 
+/* Read contig names and lengths from a FASTA's companion .fai.
+ *
+ * The .fai is a plain TSV (name, length, offset, linebases, linewidth), so
+ * this parses it directly rather than going through htslib -- which keeps the
+ * call side-effect free, where fai_load() would write an index as a side
+ * effect of merely inspecting a file. Missing or unreadable index is not an
+ * error; the caller already warns about that separately. */
+static void load_fai_refs(FileInfo *fi)
+{
+    if (!fi || fi->fasta_refs) return;
+    char fai_path[4096];
+    snprintf(fai_path, sizeof(fai_path), "%s.fai", fi->path);
+    FILE *f = fopen(fai_path, "r");
+    if (!f) return;
+    char line[8192];
+    while (fgets(line, sizeof(line), f)) {
+        char name[1024];
+        long long len = 0;
+        if (sscanf(line, "%1023s %lld", name, &len) != 2) continue;
+        fi->fasta_refs = (SeqRef *)realloc(fi->fasta_refs,
+                            sizeof(SeqRef) * (size_t)(fi->n_fasta_refs + 1));
+        fi->fasta_refs[fi->n_fasta_refs].name   = xstrdup(name);
+        fi->fasta_refs[fi->n_fasta_refs].length = (int64_t)len;
+        fi->n_fasta_refs++;
+    }
+    fclose(f);
+}
+
 int file_info_force_reference(FileInfo *fi)
 {
     if (!fi) return -1;
@@ -165,6 +193,7 @@ int file_info_force_reference(FileInfo *fi)
         file_info_add_warning(fi, "MISSING_FAI", "warning",
             "Reference FASTA has no .fai companion. Run `samtools faidx <file>`.");
     }
+    load_fai_refs(fi);
     return 0;
 }
 
@@ -195,6 +224,10 @@ void file_info_free(FileInfo *fi)
     if (fi->seq_refs) {
         for (int i = 0; i < fi->n_seq_refs; i++) free(fi->seq_refs[i].name);
         free(fi->seq_refs);
+    }
+    if (fi->fasta_refs) {
+        for (int i = 0; i < fi->n_fasta_refs; i++) free(fi->fasta_refs[i].name);
+        free(fi->fasta_refs);
     }
     free(fi->reference_path_in_header);
     free(fi->platform_guess);
@@ -952,6 +985,7 @@ static void inspect_fasta(const char *path, FileInfo *fi)
             file_info_add_warning(fi, "MISSING_FAI", "warning",
                 "No .fai index found. Run `samtools faidx` on this FASTA.");
         }
+        load_fai_refs(fi);
     }
 
     free(lens);

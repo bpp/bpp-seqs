@@ -1068,6 +1068,45 @@ t_wrapped_rows() {
 }
 run "74. sequences wrapped over indented rows are joined, not read as taxa" t_wrapped_rows
 
+# 75: two builds of one assembly share contig names but differ in length, so a
+# BAM aligned to the wrong reference must be caught by comparing @SQ LN against
+# the reference .fai -- names alone cannot tell the builds apart.
+t_wrong_reference() {
+    # The fixture BAMs are aligned to chr1 at 2500 bp (tests/data/test_ref.fa).
+    # Build a reference using that same contig name at a different length --
+    # exactly what a second build of one assembly looks like.
+    printf '>chr1\n' > "$tmp/wrongref.fa"
+    python3 -c "print('\n'.join(['A'*60]*100))" >> "$tmp/wrongref.fa"
+    samtools faidx "$tmp/wrongref.fa" 2>/dev/null || return 0   # skip if no samtools
+    out=$("$bin" --out "$tmp/wr" "$data/ind1.bam" "$tmp/wrongref.fa" \
+          "$data/loci.bed" "$data/imap.txt" 2>&1)
+    grep -q REFERENCE_MISMATCH <<<"$out"
+}
+run "75. BAM aligned to a different reference build is detected" t_wrong_reference
+
+# 76: and detection must actually stop the conversion -- an error that still
+# writes plausible-looking sequences is not a safeguard.
+t_wrong_reference_blocks() {
+    [ -f "$tmp/wrongref.fa.fai" ] || return 0
+    rm -f "$tmp/wrb".*
+    "$bin" --quiet --out "$tmp/wrb" "$data/ind1.bam" "$tmp/wrongref.fa" \
+        "$data/loci.bed" "$data/imap.txt" >/dev/null 2>&1
+    rc=$?
+    [ "$rc" -ne 0 ] && [ ! -f "$tmp/wrb.txt" ]
+}
+run "76. a wrong-reference pairing refuses to convert and exits non-zero" t_wrong_reference_blocks
+
+# 77: the legitimate pairing must still convert -- a BAM sliced from a
+# whole-genome alignment keeps every @SQ line while the reference to hand is
+# one chromosome, and only contigs present in both may be compared.
+t_right_reference_ok() {
+    out=$("$bin" --quiet --out "$tmp/rr" \
+          "$data/ind1.bam" "$data/ind2.bam" "$data/ind3.bam" "$data/ind4.bam" \
+          "$data/test_ref.fa" "$data/loci.bed" "$data/imap.txt" 2>&1) || return 1
+    ! grep -q REFERENCE_MISMATCH <<<"$out" && [ -f "$tmp/rr.txt" ]
+}
+run "77. matching BAM and reference still convert cleanly" t_right_reference_ok
+
 # ── Summary ───────────────────────────────────────────────────────────────
 echo
 echo "Tests: $pass passed, $fail failed"

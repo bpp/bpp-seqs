@@ -50,6 +50,17 @@ cross-validates the set (do the BAM `@SQ` contigs match the reference and the
 BED? are the Imap samples present in the data?). From that it picks a
 **workflow** and decides whether it can proceed:
 
+Two of those checks are treated as fatal, because no useful output exists once
+they fail: reads aligned to a **different reference** than the one supplied, and
+a set of **BAMs aligned to different references** as each other. Both are caught
+by comparing contig *lengths*, not just names — two builds of one assembly share
+contig names but differ in length (GRCh37 chr22 is 51,304,566 bp, GRCh38 chr22
+is 50,818,468), so names alone cannot tell them apart. A mismatch reports
+`REFERENCE_MISMATCH`, refuses to convert, and exits non-zero; `--dry-run` still
+inspects. Only contigs present in both are compared, so a BAM sliced out of a
+whole-genome alignment may keep all its `@SQ` lines while the reference to hand
+is a single chromosome.
+
 - If `--out PREFIX` is given **and** every required input is present, it
   **converts** and writes the BPP files.
 - Otherwise (or with `--dry-run`, or without `--out`) it stops at inspection and
