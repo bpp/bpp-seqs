@@ -16,6 +16,31 @@
 /tmp/
 /aln.seq.*
 
+# examples/04 and 05: real data is fetched by setup.sh, never committed.
+# Only README.md and setup.sh are tracked in those two directories.
+examples/04-bam-1000genomes/chr22.fa
+examples/04-bam-1000genomes/chr22.fa.fai
+examples/04-bam-1000genomes/*.bam
+examples/04-bam-1000genomes/*.bam.bai
+# samtools caches an index for each remote CRAM next to the output.
+examples/04-bam-1000genomes/*.crai
+examples/04-bam-1000genomes/imap.txt
+examples/04-bam-1000genomes/loci.bed
+examples/04-bam-1000genomes/mask.bed
+examples/05-gvcf-1000genomes/*.g.vcf.gz
+examples/05-gvcf-1000genomes/*.g.vcf.gz.tbi
+examples/05-gvcf-1000genomes/imap.txt
+examples/05-gvcf-1000genomes/loci.bed
+
+# Outputs produced by running any example.
+examples/*/demo.*
+examples/*/iupac.*
+examples/*/split.*
+examples/*/haploid.*
+examples/*/anastrepha.*
+examples/*/ascidian.*
+examples/*/milksnake.*
+
 # tests/realdata: download artifacts and pipeline outputs are not tracked;
 # only README.md, setup.sh, and run.sh are committed.
 tests/realdata/*.bam

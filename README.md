@@ -219,6 +219,11 @@ bpp-seqs --out run2 --phasing haploid cohort.g.vcf.gz loci.bed samples.imap
 bpp-seqs --out run3 locus_*.fa samples.imap
 ```
 
+For worked examples on real published data — one per workflow, with citations
+and licences — see [`examples/`](examples/). Examples 01–03 (FASTA, PHYLIP,
+NEXUS) ship with the repository and run straight after a clone; 04–05 (BAM,
+gVCF) fetch a 1000 Genomes slice with `./setup.sh`.
+
 ## Subcommands
 
 Two verbs sit alongside the main inspect/convert flow. Each takes its own
