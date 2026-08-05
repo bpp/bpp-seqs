@@ -117,7 +117,9 @@ static void print_usage(FILE *fp, const char *prog)
 "BAMs aligned to different references as each other, are detected by comparing\n"
 "contig lengths (not just names -- assembly builds share contig names). Either\n"
 "reports REFERENCE_MISMATCH, refuses to convert, and exits non-zero; --dry-run\n"
-"still inspects.\n"
+"still inspects. A --phased-vcf that names none of the BED's chromosomes, or\n"
+"shares no sample with the BAMs, can phase nothing and blocks the same way\n"
+"(PHASED_VCF_MISMATCH); covering only some samples warns and proceeds.\n"
 "\n"
 "Exit status: 0 on success (including an inspection reporting missing items),\n"
 "1 on a conversion or system error. Long options must match exactly;\n"
@@ -787,6 +789,20 @@ int main(int argc, char **argv)
     /* --- Cross-validate --- */
     CrossValidation *cv = cross_validate(files, cli.n_inputs);
 
+    /* The --phased-vcf is inspected on its own rather than joining the input
+     * list, so that reconciling it against the BAMs cannot change which
+     * workflow gets selected. */
+    FileInfo *phased_fi = NULL;
+    if (cli.phased_vcf) {
+        phased_fi = inspect_file(cli.phased_vcf);
+        if (!phased_fi) {
+            fprintf(stderr, "Error: cannot open or read --phased-vcf '%s'\n",
+                    cli.phased_vcf);
+        } else {
+            cross_validate_phased_vcf(cv, phased_fi, files, cli.n_inputs);
+        }
+    }
+
     /* --- Decide workflow --- */
     WorkflowDecision *d = workflow_decide(files, cli.n_inputs);
 
@@ -870,6 +886,7 @@ int main(int argc, char **argv)
 
     /* --- Cleanup --- */
     free(rec);
+    if (phased_fi) file_info_free(phased_fi);
     conversion_result_free(&cr);
     workflow_decision_free(d);
     cross_validation_free(cv);

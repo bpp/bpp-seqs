@@ -322,6 +322,121 @@ CrossValidation *cross_validate(FileInfo **files, int n)
     return cv;
 }
 
+void cross_validate_phased_vcf(CrossValidation *cv, FileInfo *vcf_fi,
+                               FileInfo **files, int n)
+{
+    if (!cv || !vcf_fi) return;
+
+    FileInfo *first_bam = NULL;
+    int n_bams = 0;
+    for (int i = 0; i < n; i++) {
+        if (files[i]->ft == BS_BAM || files[i]->ft == BS_CRAM) {
+            if (!first_bam) first_bam = files[i];
+            n_bams++;
+        }
+    }
+    if (!first_bam) return;
+
+    char msg[640];
+
+    if (vcf_fi->ft == BS_UNKNOWN) {
+        /* BCF is a supported --phased-vcf input but is binary, and the
+         * content-based classifier does not recognise it, so there is no
+         * header metadata here to reconcile. Leave it to open_vcf_phase(),
+         * which validates the file and its index properly. */
+        return;
+    }
+    if (vcf_fi->ft != BS_VCF && vcf_fi->ft != BS_GVCF) {
+        snprintf(msg, sizeof(msg),
+            "--phased-vcf '%s' is not a VCF (detected: %s).",
+            vcf_fi->path, file_type_name(vcf_fi->ft));
+        add_issue(cv, "PHASED_VCF_MISMATCH", "error", vcf_fi->path, msg);
+        return;
+    }
+
+    /* 1. Contigs. A VCF whose contig names do not meet the BAM's answers every
+     * region query with nothing, which reads downstream as "this sample has no
+     * heterozygotes" -- indistinguishable from a genuinely homozygous sample,
+     * and it silently returns reference bases for every variable site. The
+     * usual cause is a naming convention difference ("chr22" vs "22"). */
+    if (vcf_fi->n_vcf_contigs > 0) {
+        int shared = 0;
+        for (int i = 0; i < first_bam->n_seq_refs && !shared; i++) {
+            const SeqRef *sq = &first_bam->seq_refs[i];
+            if (!sq->name) continue;
+            for (int j = 0; j < vcf_fi->n_vcf_contigs; j++) {
+                const SeqRef *vc = &vcf_fi->vcf_contigs[j];
+                if (!vc->name || strcmp(sq->name, vc->name) != 0) continue;
+                shared++;
+                if (vc->length > 0 && sq->length != vc->length) {
+                    snprintf(msg, sizeof(msg),
+                        "Contig '%s' is %lld bp in the BAM/CRAM @SQ header but %lld bp "
+                        "in --phased-vcf '%s'. The VCF was called against a different "
+                        "reference, so its coordinates do not line up with the reads.",
+                        sq->name, (long long)sq->length, (long long)vc->length,
+                        vcf_fi->path);
+                    add_issue(cv, "PHASED_VCF_MISMATCH", "error", vcf_fi->path, msg);
+                }
+                break;
+            }
+        }
+        if (shared == 0) {
+            snprintf(msg, sizeof(msg),
+                "--phased-vcf '%s' shares no contig name with the BAM/CRAM @SQ headers. "
+                "Every phase lookup would miss, silently returning reference bases at "
+                "variable sites. Check the naming convention (e.g. 'chr22' vs '22').",
+                vcf_fi->path);
+            add_issue(cv, "PHASED_VCF_MISMATCH", "error", vcf_fi->path, msg);
+        }
+
+        /* Sharing *some* contig is not enough: what matters is that every
+         * chromosome we will actually pile up over is in the VCF. A panel
+         * renamed on only one chromosome still overlaps everywhere else while
+         * answering nothing for the loci at hand. */
+        for (int i = 0; i < n; i++) {
+            FileInfo *bd = files[i];
+            if (bd->ft != BS_BED) continue;
+            for (int c = 0; c < bd->n_chromosomes; c++) {
+                if (seqref_has(vcf_fi->vcf_contigs, vcf_fi->n_vcf_contigs,
+                               bd->chromosomes[c])) continue;
+                snprintf(msg, sizeof(msg),
+                    "BED chromosome '%s' is absent from --phased-vcf '%s'. Phase "
+                    "lookups over those loci would return nothing, silently emitting "
+                    "reference bases at every variable site.",
+                    bd->chromosomes[c], vcf_fi->path);
+                add_issue(cv, "PHASED_VCF_MISMATCH", "error", vcf_fi->path, msg);
+                break;   /* one report per BED is enough */
+            }
+        }
+    }
+
+    /* 2. Samples. Individually missing samples are fine -- those fall back to
+     * IUPAC, which is how a phased panel is mixed with unphased genomes. No
+     * overlap at all means the VCF cannot phase anything it was given. */
+    int matched = 0;
+    for (int i = 0; i < n; i++) {
+        FileInfo *fi = files[i];
+        if ((fi->ft != BS_BAM && fi->ft != BS_CRAM) || !fi->sample_name) continue;
+        for (int j = 0; j < vcf_fi->n_sample_names; j++) {
+            if (vcf_fi->sample_names[j] &&
+                strcmp(vcf_fi->sample_names[j], fi->sample_name) == 0) { matched++; break; }
+        }
+    }
+    if (matched == 0) {
+        snprintf(msg, sizeof(msg),
+            "None of the %d BAM/CRAM sample%s appear in --phased-vcf '%s', so it can "
+            "phase nothing. Check that the VCF covers these individuals.",
+            n_bams, n_bams == 1 ? "" : "s", vcf_fi->path);
+        add_issue(cv, "PHASED_VCF_MISMATCH", "error", vcf_fi->path, msg);
+    } else if (matched < n_bams) {
+        snprintf(msg, sizeof(msg),
+            "%d of %d BAM/CRAM samples are absent from --phased-vcf '%s'; those will "
+            "fall back to IUPAC (one unphased sequence each).",
+            n_bams - matched, n_bams, vcf_fi->path);
+        add_issue(cv, "PHASED_VCF_PARTIAL", "warning", vcf_fi->path, msg);
+    }
+}
+
 int cross_validation_n_blocking(const CrossValidation *cv)
 {
     if (!cv) return 0;
@@ -330,7 +445,8 @@ int cross_validation_n_blocking(const CrossValidation *cv)
         const char *c = cv->issues[i].code;
         if (!c) continue;
         if (strcmp(c, "REFERENCE_MISMATCH") == 0 ||
-            strcmp(c, "BAM_REF_INCONSISTENT") == 0) n++;
+            strcmp(c, "BAM_REF_INCONSISTENT") == 0 ||
+            strcmp(c, "PHASED_VCF_MISMATCH") == 0) n++;
     }
     return n;
 }

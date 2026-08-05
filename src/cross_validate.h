@@ -38,4 +38,16 @@ void              cross_validation_free(CrossValidation *cv);
  * warn -- they narrow the output rather than invalidate it. */
 int cross_validation_n_blocking(const CrossValidation *cv);
 
+/* Reconcile a --phased-vcf against the BAM/CRAM inputs it will be applied to.
+ *
+ * This VCF arrives by flag rather than positionally, so it is not part of the
+ * inspected input set and none of the checks above see it. It is checked apart
+ * from them deliberately: adding it to the input list would change which
+ * workflow is selected, since a VCF among the inputs means something else
+ * entirely.
+ *
+ * Adds issues to cv. `vcf_fi` is an inspected FileInfo for the phased VCF. */
+void cross_validate_phased_vcf(CrossValidation *cv, FileInfo *vcf_fi,
+                               FileInfo **files, int n);
+
 #endif /* BPP_SEQS_CROSS_VALIDATE_H */

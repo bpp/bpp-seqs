@@ -1107,6 +1107,70 @@ t_right_reference_ok() {
 }
 run "77. matching BAM and reference still convert cleanly" t_right_reference_ok
 
+# A --phased-vcf arrives by flag, not positionally, so it is not part of the
+# inspected input set. These cover the reconciliation done for it separately.
+# Body is written once; $1 picks the contig name and $2 the sample columns.
+make_phase_vcf() {   # $1=out-stem  $2=contig  $3..=sample names
+    local stem=$1 ctg=$2; shift 2
+    { printf '##fileformat=VCFv4.2\n'
+      printf '##FORMAT=<ID=GT,Number=1,Type=String,Description="Genotype">\n'
+      printf '##contig=<ID=%s,length=2500>\n' "$ctg"
+      printf '#CHROM\tPOS\tID\tREF\tALT\tQUAL\tFILTER\tINFO\tFORMAT'
+      for s in "$@"; do printf '\t%s' "$s"; done; printf '\n'
+      printf '%s\t100\t.\tA\tT\t.\tPASS\t.\tGT' "$ctg"
+      for _ in "$@"; do printf '\t0|1'; done; printf '\n'
+    } > "$tmp/$stem.vcf"
+    bgzip -f "$tmp/$stem.vcf" && tabix -f -p vcf "$tmp/$stem.vcf.gz" 2>/dev/null
+}
+
+bam_set="$data/ind1.bam $data/ind2.bam $data/ind3.bam $data/ind4.bam"
+
+# 78: a phased VCF that does not name the BED's chromosome answers every phase
+# lookup with nothing, which is indistinguishable from "no heterozygotes" and
+# silently emits reference bases at variable sites.
+t_phased_vcf_wrong_contig() {
+    make_phase_vcf pv_badctg 1 ind1 ind2 ind3 ind4 || return 0
+    out=$("$bin" --keep-invariant --out "$tmp/pvb" --phasing vcf \
+          --phased-vcf "$tmp/pv_badctg.vcf.gz" $bam_set \
+          "$data/test_ref.fa" "$data/loci.bed" "$data/imap.txt" 2>&1)
+    grep -q PHASED_VCF_MISMATCH <<<"$out"
+}
+run "78. phased VCF missing the BED chromosome is detected" t_phased_vcf_wrong_contig
+
+# 79: and it must stop the run, not merely mention it.
+t_phased_vcf_blocks() {
+    [ -s "$tmp/pv_badctg.vcf.gz" ] || return 0
+    rm -f "$tmp/pvblk".*
+    "$bin" --quiet --keep-invariant --out "$tmp/pvblk" --phasing vcf \
+        --phased-vcf "$tmp/pv_badctg.vcf.gz" $bam_set \
+        "$data/test_ref.fa" "$data/loci.bed" "$data/imap.txt" >/dev/null 2>&1
+    rc=$?
+    [ "$rc" -ne 0 ] && [ ! -f "$tmp/pvblk.txt" ]
+}
+run "79. a phased VCF that cannot phase refuses to convert" t_phased_vcf_blocks
+
+# 80: a VCF sharing no sample with the BAMs can phase nothing either.
+t_phased_vcf_disjoint_samples() {
+    make_phase_vcf pv_disj chr1 otherA otherB || return 0
+    out=$("$bin" --keep-invariant --out "$tmp/pvd" --phasing vcf \
+          --phased-vcf "$tmp/pv_disj.vcf.gz" $bam_set \
+          "$data/test_ref.fa" "$data/loci.bed" "$data/imap.txt" 2>&1)
+    grep -q "can phase nothing" <<<"$out"
+}
+run "80. phased VCF sharing no sample with the BAMs is detected" t_phased_vcf_disjoint_samples
+
+# 81: partial overlap is legitimate -- that is how a phased reference panel is
+# combined with unphased genomes -- so it warns and still converts.
+t_phased_vcf_partial() {
+    make_phase_vcf pv_part chr1 ind1 ind2 || return 0
+    out=$("$bin" --keep-invariant --out "$tmp/pvp" --phasing vcf \
+          --phased-vcf "$tmp/pv_part.vcf.gz" $bam_set \
+          "$data/test_ref.fa" "$data/loci.bed" "$data/imap.txt" 2>&1) || return 1
+    grep -q PHASED_VCF_PARTIAL <<<"$out" && [ -f "$tmp/pvp.txt" ] &&
+    ! grep -q PHASED_VCF_MISMATCH <<<"$out"
+}
+run "81. partially-covering phased VCF warns but still converts" t_phased_vcf_partial
+
 # ── Summary ───────────────────────────────────────────────────────────────
 echo
 echo "Tests: $pass passed, $fail failed"

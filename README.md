@@ -61,6 +61,16 @@ inspects. Only contigs present in both are compared, so a BAM sliced out of a
 whole-genome alignment may keep all its `@SQ` lines while the reference to hand
 is a single chromosome.
 
+A `--phased-vcf` is reconciled against the BAMs too. It arrives by flag rather
+than positionally, so it is checked separately from the inputs above — adding it
+to the input set would change which workflow is selected. A VCF that does not
+name the BED's chromosomes, or shares no sample with the BAMs, can phase nothing
+and would silently emit reference bases at every variable site, so it reports
+`PHASED_VCF_MISMATCH` and blocks. Covering only *some* of the samples is
+legitimate — that is how a phased reference panel is combined with unphased
+genomes — so it warns with `PHASED_VCF_PARTIAL` and proceeds, phasing what it
+can and falling back to IUPAC for the rest.
+
 - If `--out PREFIX` is given **and** every required input is present, it
   **converts** and writes the BPP files.
 - Otherwise (or with `--dry-run`, or without `--out`) it stops at inspection and
