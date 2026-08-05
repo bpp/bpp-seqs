@@ -53,6 +53,27 @@ typedef enum {
     PHASE_VCF     = 3    /* 2 seqs per sample using phased VCF (best)      */
 } Phasing;
 
+/* Which base caller turns a pileup column into a genotype.
+ *
+ * CALLER_CONSENSUS is the samtools/Gap5 Bayesian model, vendored under
+ * src/vendor/samtools and verified byte-identical to `samtools consensus -A`
+ * by the oracle tests. It weighs each observation by its base quality, caps
+ * that by mapping quality, and masks positions it cannot call confidently.
+ *
+ * CALLER_COUNTS is bpp-seqs' original caller: rank raw allele counts, call a
+ * heterozygote when the minor allele clears --het-freq. It has no error model,
+ * so at low depth a single miscalled base can carry a site. Kept so results
+ * from earlier versions can still be reproduced.
+ *
+ * Only PHASE_IUPAC can use CALLER_CONSENSUS: a consensus caller emits one
+ * sequence per individual, with heterozygotes as IUPAC codes. PHASE_SPLIT and
+ * PHASE_VCF need two resolved haplotypes, which it does not produce, so they
+ * always use CALLER_COUNTS regardless of this setting. */
+typedef enum {
+    CALLER_CONSENSUS = 0,
+    CALLER_COUNTS    = 1
+} Caller;
+
 /* What to do with unphased het calls (GT uses '/' not '|') in VCF mode */
 typedef enum {
     UNPHASED_MISSING = 0,   /* write N to both haplotypes (safe default) */
@@ -129,6 +150,7 @@ typedef struct {
     int     min_dp;
     double  het_freq;       /* minor-allele freq ≥ this → call het */
     Phasing phasing;
+    Caller  caller;              /* base caller; PHASE_IUPAC only (see above) */
     char   *phased_vcf;          /* path to phased VCF (--phasing vcf only) */
     UnphasedPolicy unphased_policy; /* what to do with unphased het GTs     */
     int     min_length;

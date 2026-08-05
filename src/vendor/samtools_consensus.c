@@ -192,18 +192,32 @@ static int bpps_column(void *cd, samFile *fp, sam_hdr_t *h, pileup_t *p,
     region_ctx *r = (region_ctx *)cd;
 
     if (nth) return 0;                       /* inserted base: no ref coord */
-    if (pos < r->beg || pos >= r->end) return 0;
+
+    /* samtools' pileup_loop reports 1-based positions -- upstream's own
+     * basic_pileup() guards with `iter->beg >= pos`, which only excludes the
+     * right column if pos is 1-based against a 0-based iterator. Our beg/end
+     * are 0-based half-open, so convert before indexing. */
+    hts_pos_t pos0 = pos - 1;
+    if (pos0 < r->beg || pos0 >= r->end) return 0;
 
     int base = 'N', qual = 0;
     if (consensus_base(r->base.opts, p, pos, depth, &base, &qual) < 0)
         return -1;
 
-    /* A deletion occupies its reference position. samtools writes '*', which
-     * is not a base BPP can read, so it is remapped -- but keeping the column
-     * is what holds samples in register with each other. */
-    if (base == '*') base = r->del_char;
+    /* Deletions, in samtools' encoding:
+     *   '*'        homozygous deletion
+     *   lowercase  heterozygous base/deletion (upstream's emit matrix uses
+     *              the 5th row/column, "acgt*", for anything paired with '*')
+     * Neither is a base BPP can read, and IUPAC has no code for base/gap, so
+     * both are remapped. Keeping the column is what holds samples in register.
+     * With del_char '*' the raw upstream bytes pass through unchanged, which
+     * is what the oracle test compares. */
+    if (r->del_char != '*') {
+        if (base == '*') base = r->del_char;
+        else if (base >= 'a' && base <= 'z') base = r->del_char;
+    }
 
-    r->seq_out[pos - r->beg] = (char)base;
+    r->seq_out[pos0 - r->beg] = (char)base;
     return 0;
 }
 

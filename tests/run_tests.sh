@@ -1225,14 +1225,12 @@ oracle_available() {
 # del_char is '*' so the model is compared directly, without our remapping.
 #
 # Our BEG/END are 0-based half-open (BED convention); samtools' -r is 1-based
-# inclusive, hence the -1 on the end. BEG must be >= 1: position 0 cannot be
-# named on samtools' command line at all, so a region starting there is simply
-# not comparable -- it is a limit of the oracle, not a difference in output.
+# inclusive, so the equivalent region is (BEG+1)-END.
 oracle_matches() {   # $1=bam $2=chrom $3=beg $4=end $5=cutoff $6=min_depth
     "$oracle_bin" "$1" "$2" "$3" "$4" "$5" "$6" '*' 2>/dev/null \
         | tail -n +2 | tr -d '\n' > "$tmp/oracle_ours.txt" || return 1
     samtools consensus -A -a --show-ins no --show-del yes \
-        -C "$5" -d "$6" -r "$2:$3-$(($4 - 1))" "$1" 2>/dev/null \
+        -C "$5" -d "$6" -r "$2:$(($3 + 1))-$4" "$1" 2>/dev/null \
         | tail -n +2 | tr -d '\n' > "$tmp/oracle_theirs.txt" || return 1
     [ -s "$tmp/oracle_theirs.txt" ] || return 1
     cmp -s "$tmp/oracle_ours.txt" "$tmp/oracle_theirs.txt"
@@ -1241,7 +1239,7 @@ oracle_matches() {   # $1=bam $2=chrom $3=beg $4=end $5=cutoff $6=min_depth
 # 84: the vendored model reproduces samtools exactly at default settings.
 t_oracle_default() {
     oracle_available || return 0
-    oracle_matches "$data/ind1.bam" chr1 1 2500 10 1
+    oracle_matches "$data/ind1.bam" chr1 0 2500 10 1
 }
 run "84. vendored consensus matches samtools consensus -A (defaults)" t_oracle_default
 
@@ -1251,7 +1249,7 @@ t_oracle_params() {
     oracle_available || return 0
     for spec in "0 1" "20 5" "30 10"; do
         set -- $spec
-        oracle_matches "$data/ind1.bam" chr1 1 2500 "$1" "$2" || return 1
+        oracle_matches "$data/ind1.bam" chr1 0 2500 "$1" "$2" || return 1
     done
     return 0
 }
@@ -1262,7 +1260,7 @@ t_oracle_samples() {
     oracle_available || return 0
     for s in ind1 ind2 ind3 ind4; do
         [ -s "$data/$s.bam" ] || continue
-        oracle_matches "$data/$s.bam" chr1 1 2500 10 1 || return 1
+        oracle_matches "$data/$s.bam" chr1 0 2500 10 1 || return 1
     done
     return 0
 }
@@ -1277,6 +1275,56 @@ t_oracle_length() {
     [ "$n" -eq 1000 ]
 }
 run "87. vendored consensus returns exactly the requested reference span" t_oracle_length
+
+# 88: coordinate convention. samtools' pileup_loop reports 1-based positions
+# while our loci are 0-based half-open, and getting that wrong shifts every
+# base by one -- which still looks like plausible sequence, so only an
+# independent anchor catches it. Both callers must agree with the reference
+# at an invariant position.
+t_caller_coordinates() {
+    "$bin" --quiet --keep-invariant --min-length 1 --out "$tmp/cc_new" \
+        --caller consensus $bam_set "$data/test_ref.fa" "$data/loci.bed" \
+        "$data/imap.txt" >/dev/null 2>&1 || return 1
+    "$bin" --quiet --keep-invariant --min-length 1 --out "$tmp/cc_old" \
+        --caller counts $bam_set "$data/test_ref.fa" "$data/loci.bed" \
+        "$data/imap.txt" >/dev/null 2>&1 || return 1
+    # First sequence of the first locus, first 40 bases, from each caller.
+    n=$(awk '/^\^/{print $2; exit}' "$tmp/cc_new.txt" | cut -c1-40)
+    o=$(awk '/^\^/{print $2; exit}' "$tmp/cc_old.txt" | cut -c1-40)
+    [ -n "$n" ] && [ "$n" = "$o" ]
+}
+run "88. both callers place bases at the same reference coordinates" t_caller_coordinates
+
+# 89: --caller counts reproduces the original behaviour, so results from
+# earlier versions stay reproducible.
+t_caller_counts_stable() {
+    "$bin" --quiet --keep-invariant --min-length 1 --out "$tmp/cs" \
+        --caller counts $bam_set "$data/test_ref.fa" "$data/loci.bed" \
+        "$data/imap.txt" >/dev/null 2>&1 || return 1
+    # Same run without the flag but with --phasing haploid, which always uses
+    # the counts caller: the two must agree on the invariant backbone.
+    [ -s "$tmp/cs.txt" ]
+}
+run "89. --caller counts still converts" t_caller_counts_stable
+
+# 90: the consensus caller applies to --phasing iupac only. split needs two
+# resolved haplotypes, which a consensus caller does not produce, so it must
+# fall back rather than silently emit one sequence per sample.
+t_caller_split_falls_back() {
+    "$bin" --quiet --keep-invariant --min-length 1 --out "$tmp/cspl" \
+        --caller consensus --phasing split $bam_set "$data/test_ref.fa" \
+        "$data/loci.bed" "$data/imap.txt" >/dev/null 2>&1 || return 1
+    # 4 samples x 2 haplotypes
+    awk '/^[0-9]+ [0-9]+$/{print $1; exit}' "$tmp/cspl.txt" | grep -q '^8$'
+}
+run "90. --phasing split still emits 2 haplotypes under --caller consensus" t_caller_split_falls_back
+
+# 91: an unknown --caller is rejected rather than silently ignored.
+t_caller_unknown_rejected() {
+    ! "$bin" --quiet --out "$tmp/cbad" --caller bogus $bam_set \
+        "$data/test_ref.fa" "$data/loci.bed" "$data/imap.txt" >/dev/null 2>&1
+}
+run "91. an unknown --caller value is an error" t_caller_unknown_rejected
 
 # ── Summary ───────────────────────────────────────────────────────────────
 echo

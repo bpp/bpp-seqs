@@ -177,6 +177,34 @@ list.
 | `--imap FILE` | Imap file (sample → population mapping) |
 | `--reference FILE` | Force FILE to be treated as the reference FASTA, skipping the content-based reference-vs-contigs classifier |
 
+### Base calling
+
+Applies to BAM/CRAM input only.
+
+| Option | Meaning |
+|--------|---------|
+| `--caller MODE` | `consensus` (default) or `counts` |
+
+`consensus` is the samtools/Gap5 Bayesian model, vendored from samtools 1.23.1
+and verified byte-identical to `samtools consensus -A` by the test suite. It
+weighs every observation by its base quality, caps that by mapping quality,
+adjusts for local quality minima and mismatch density, and masks positions it
+cannot call confidently.
+
+`counts` is the original caller: rank raw allele counts and call a heterozygote
+when the minor allele clears `--het-freq`. It has no error model, so at modest
+depth a single miscalled base can carry a site. It is kept so results from
+earlier versions remain reproducible, and is used automatically by
+`--phasing split`, `haploid` and `vcf`, which need two resolved haplotypes that
+a consensus caller does not produce.
+
+On the 100 kb, 4-sample example the two differ at 0.10% of bases. The
+consensus caller reports 64 variable sites against the counts caller's 84; of
+the 21 positions where `counts` calls a heterozygote and `consensus` does not,
+only 2 appear as variants in the curated 1000 Genomes panel for those same
+individuals, and 17 of 20 lie within 100 bp of another such position — the
+signature of mismapping rather than real variation.
+
 ### Phasing
 
 Applies to BAM/CRAM and gVCF input; alignment inputs (FASTA MSA / PHYLIP /

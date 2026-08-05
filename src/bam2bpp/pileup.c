@@ -22,6 +22,7 @@
 #include <htslib/hts.h>
 
 #include "bam2bpp.h"
+#include "samtools_consensus.h"
 
 /* -------------------------------------------------------------------------
  * Per-BAM data passed to the pileup callback
@@ -255,6 +256,57 @@ int process_locus(BamFile **bams, int n_bams,
             seq_names[i] = strdup(bams[i]->sample);
             if (!seq_names[i]) goto fail_alloc;
         }
+    }
+
+    /* ------------------------------------------------------------------
+     * Consensus caller path (PHASE_IUPAC only).
+     *
+     * The samtools/Gap5 model works one sample at a time, so it runs per BAM
+     * rather than through the shared multi-sample pileup below. Everything
+     * else -- sequence layout, names, N-masking -- is unchanged, so the two
+     * callers produce directly comparable output.
+     * ------------------------------------------------------------------ */
+
+    if (args->phasing == PHASE_IUPAC && args->caller == CALLER_CONSENSUS) {
+        BppsConsOpts co;
+        bpps_cons_opts_init(&co);
+        co.min_depth = args->min_dp;
+        co.min_mqual = args->min_mq;
+        co.min_qual  = args->min_bq;
+        co.del_char  = 'N';
+
+        BppsCons *cons = bpps_cons_init(&co);
+        if (!cons) goto fail_alloc;
+
+        int64_t cons_depth = 0;
+        for (int i = 0; i < n_bams; i++) {
+            if (bpps_cons_region(cons, bams[i]->fp, bams[i]->hdr, bams[i]->idx,
+                                 loc->chrom, loc->start, loc->end,
+                                 seqs[i]) != 0) {
+                /* Region absent from this BAM: leave the sequence as N,
+                 * matching the multi-sample path's behaviour. */
+                memset(seqs[i], 'N', locus_len);
+                continue;
+            }
+            for (int j = 0; j < locus_len; j++)
+                if (seqs[i][j] != 'N') cons_depth++;
+        }
+        bpps_cons_free(cons);
+
+        result->name      = strdup(loc->name);
+        result->seqs      = seqs;
+        result->seq_names = seq_names;
+        result->n_seqs    = n_seqs;
+        result->locus_len = locus_len;
+
+        /* The model does not report per-position depth, so this is the
+         * fraction of callable positions rather than a read count. Named
+         * mean_dp for the shared interface; the stats column is documented
+         * as approximate for this caller. */
+        *mean_dp_out = (n_bams > 0 && locus_len > 0)
+                     ? (double)cons_depth / ((double)n_bams * locus_len)
+                     : 0.0;
+        return 0;
     }
 
     /* ------------------------------------------------------------------

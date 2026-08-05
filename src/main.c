@@ -24,7 +24,7 @@
 #include "bam2bpp/bam2bpp.h"
 #include "bam2bpp/vcf_phase.h"
 
-#define BPP_SEQS_VERSION "0.1.6"
+#define BPP_SEQS_VERSION "0.2.0"
 
 /* ────────────────────────────────────────────────────────────────────────
  * CLI options
@@ -53,6 +53,7 @@ typedef struct {
     int    min_snps;
     int    keep_invariant;
     Phasing phasing;
+    Caller  caller;
     char  *phased_vcf;
 } CLI;
 
@@ -85,6 +86,17 @@ static void print_usage(FILE *fp, const char *prog)
 "  --imap FILE           Imap file (sample → population mapping)\n"
 "  --reference FILE      Designate FILE as the reference FASTA (skips the\n"
 "                        content-based REFERENCE vs CONTIGS classifier).\n"
+"\n"
+"Base calling (BAM/CRAM only):\n"
+"  --caller MODE         consensus (default) or counts\n"
+"                          consensus  samtools/Gap5 Bayesian model: weighs each\n"
+"                                     base by its quality, caps by mapping\n"
+"                                     quality, masks what it cannot call.\n"
+"                                     --phasing iupac only.\n"
+"                          counts     the original caller: rank raw allele\n"
+"                                     counts against --het-freq, no error\n"
+"                                     model. Used automatically by --phasing\n"
+"                                     split/haploid/vcf, which need it.\n"
 "\n"
 "Phasing (how diploid calls become sequences; BAM/CRAM and gVCF only):\n"
 "  --phasing MODE        iupac (default), split, haploid, vcf\n"
@@ -137,6 +149,7 @@ enum {
     OPT_IMAP,
     OPT_REFERENCE,
     OPT_PHASING,
+    OPT_CALLER,
     OPT_PHASED_VCF,
     OPT_MIN_BQ,
     OPT_MIN_MQ,
@@ -158,6 +171,7 @@ static const struct option LONG_OPTS[] = {
     {"imap",           required_argument, NULL, OPT_IMAP},
     {"reference",      required_argument, NULL, OPT_REFERENCE},
     {"phasing",        required_argument, NULL, OPT_PHASING},
+    {"caller",         required_argument, NULL, OPT_CALLER},
     {"phased-vcf",     required_argument, NULL, OPT_PHASED_VCF},
     {"min-bq",         required_argument, NULL, OPT_MIN_BQ},
     {"min-mq",         required_argument, NULL, OPT_MIN_MQ},
@@ -183,6 +197,7 @@ static void cli_init(CLI *c)
     c->max_missing  = DEFAULT_MAX_MISS;
     c->min_snps     = DEFAULT_MIN_SNPS;
     c->phasing      = PHASE_IUPAC;
+    c->caller       = CALLER_CONSENSUS;
 }
 
 static void cli_free(CLI *c)
@@ -256,6 +271,12 @@ static int parse_cli(int argc, char **argv, CLI *c)
                 else if (strcmp(optarg, "haploid") == 0) c->phasing = PHASE_HAPLOID;
                 else if (strcmp(optarg, "vcf")     == 0) c->phasing = PHASE_VCF;
                 else { fprintf(stderr, "Error: unknown --phasing '%s'\n", optarg); return -1; }
+                break;
+            case OPT_CALLER:
+                if      (strcmp(optarg, "consensus") == 0) c->caller = CALLER_CONSENSUS;
+                else if (strcmp(optarg, "counts")    == 0) c->caller = CALLER_COUNTS;
+                else { fprintf(stderr, "Error: unknown --caller '%s' "
+                               "(expected 'consensus' or 'counts')\n", optarg); return -1; }
                 break;
             case OPT_PHASED_VCF: c->phased_vcf  = strdup(optarg); break;
             case OPT_MIN_BQ:     c->min_bq      = atoi(optarg); break;
@@ -346,6 +367,7 @@ static int run_bam2bpp(const CLI *c, FileInfo **files, int n_files,
     a.min_dp        = c->min_dp;
     a.het_freq      = c->het_freq;
     a.phasing       = c->phasing;
+    a.caller        = c->caller;
     a.phased_vcf    = c->phased_vcf ? strdup(c->phased_vcf) : NULL;
     a.min_length    = c->min_length;
     a.max_missing   = c->max_missing;

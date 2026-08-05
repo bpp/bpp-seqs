@@ -42,9 +42,11 @@ typedef struct {
     /* Hard filters applied before pileup (samtools --min-MQ / --min-BQ). */
     int    min_mqual;
     int    min_qual;
-    /* Character written where the consensus is a deletion. samtools writes
-     * '*'; BPP alignments want either a gap ('-') or missing ('N'). Set to
-     * '*' to reproduce samtools byte-for-byte, which the oracle test does. */
+    /* Character written where a deletion is involved: samtools writes '*' for
+     * a homozygous deletion and a lowercase base for a base/deletion
+     * heterozygote. BPP can read neither (IUPAC has no base/gap code), so both
+     * become this character -- 'N' or '-'. Set it to '*' to pass upstream's
+     * bytes through unchanged, which is what the oracle test compares. */
     char   del_char;
 } BppsConsOpts;
 
