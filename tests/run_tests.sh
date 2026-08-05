@@ -1171,6 +1171,26 @@ t_phased_vcf_partial() {
 }
 run "81. partially-covering phased VCF warns but still converts" t_phased_vcf_partial
 
+# 82: --phasing vcf writes the reference base wherever the VCF is silent, so a
+# panel that omits variants the reads show quietly discards them. That is by
+# design (a panel filters sequencing error) but must not be invisible.
+t_vcf_override_reported() {
+    make_phased_vcf || return 1
+    out=$("$bin" --keep-invariant --out "$tmp/ovr" --phasing vcf \
+          --phased-vcf "$tmp/phased.vcf.gz" $bam_set \
+          "$data/test_ref.fa" "$data/loci.bed" "$data/imap.txt" 2>&1) || return 1
+    grep -q "have no record in" <<<"$out"
+}
+run "82. sites the phased VCF omits are reported, not silently dropped" t_vcf_override_reported
+
+# 83: and the accounting must not fire when no phased VCF is in play.
+t_no_override_without_vcf() {
+    out=$("$bin" --keep-invariant --out "$tmp/novr" --phasing split $bam_set \
+          "$data/test_ref.fa" "$data/loci.bed" "$data/imap.txt" 2>&1) || return 1
+    ! grep -q "have no record in" <<<"$out"
+}
+run "83. the override report stays quiet without --phasing vcf" t_no_override_without_vcf
+
 # ── Summary ───────────────────────────────────────────────────────────────
 echo
 echo "Tests: $pass passed, $fail failed"

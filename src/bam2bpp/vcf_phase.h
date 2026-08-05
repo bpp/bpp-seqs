@@ -105,4 +105,21 @@ VcfPhaseSampleStat *vcf_phase_classify(VcfPhase     *vcf,
 
 void vcf_phase_stats_free(VcfPhaseSampleStat *s, int n);
 
+/* ────────────────────────────────────────────────────────────────────────
+ * Reference-bias accounting for --phasing vcf.
+ *
+ * Pass 1 writes the reference base for PHASE_VCF samples and pass 2 overwrites
+ * only where the VCF has a record, so a site the reads call non-reference but
+ * the VCF omits silently becomes homozygous reference. That is deliberate --
+ * the panel filters sequencing error -- but a filtered panel also omits rare
+ * and private variants, so the count is surfaced rather than left invisible.
+ *
+ * reads_nonref: positions where a PHASE_VCF sample's pileup disagreed with the
+ *               reference.  overridden: how many of those the VCF did not cover.
+ * Reset before the locus loop; read after it.
+ * ───────────────────────────────────────────────────────────────────────── */
+void vcf_phase_reset_override_stats(void);
+void vcf_phase_get_override_stats(int64_t *reads_nonref, int64_t *overridden);
+
+
 #endif /* VCF_PHASE_H */

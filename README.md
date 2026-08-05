@@ -131,6 +131,27 @@ How diploid genotype calls become sequences (the `--phasing` flag — this is
 - `haploid` — a single major-allele sequence per individual.
 - `vcf` — apply true phase from a phased VCF (`--phased-vcf FILE`).
 
+Under `vcf`, the VCF is authoritative: every covered position starts as the
+reference base and only VCF records overwrite it. A site the reads call
+non-reference but the VCF never mentions therefore keeps the reference base.
+bpp-seqs counts those and reports them:
+
+```
+Note: 61 of 180 site-by-sample genotypes called non-reference from the reads
+      have no record in 'phased.vcf.gz'; the reference base was kept (33.9%).
+```
+
+**Read this as a disagreement, not as lost data.** The read-based call is made
+on `--min-bq`/`--min-mq`/`--min-dp`/`--het-freq` thresholds alone, with no error
+model, so its non-reference calls mix genuine variants the panel omits (rare and
+private ones, or classes it did not include) with sequencing and mapping error
+that the panel deliberately filters out. Discarding the latter is the panel
+working correctly. bpp-seqs cannot separate the two, so it reports the count and
+leaves the judgement to you.
+
+A non-zero count is normal with any filtered panel. A high fraction is worth
+checking against `--phasing split`, which calls from the reads alone.
+
 ## Options
 
 Unknown or abbreviated long options are rejected (exact match only), so a

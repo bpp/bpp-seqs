@@ -434,6 +434,7 @@ static int run_bam2bpp(const CLI *c, FileInfo **files, int n_files,
         }
     }
 
+    vcf_phase_reset_override_stats();
     bam2bpp_writer_set_quiet(c->quiet);
 
     if (!c->quiet) {
@@ -533,6 +534,33 @@ static int run_bam2bpp(const CLI *c, FileInfo **files, int n_files,
     if (n_results == 0) {
         fprintf(stderr, "Error: no loci passed QC.\n");
         goto fail2;
+    }
+
+    /* Where the pileup calls non-reference and the VCF has no record, the
+     * reference base written by pass 1 survives. Report the count, but do not
+     * call it lost variation: the pileup caller applies only --min-bq/--min-mq/
+     * --min-dp/--het-freq thresholds and has no error model, so its
+     * non-reference calls mix real variants with sequencing and mapping error.
+     * A curated panel filtering the latter out is the panel working correctly.
+     * bpp-seqs cannot tell the two apart, so it reports the disagreement and
+     * leaves the interpretation to the reader. */
+    if (a.phasing == PHASE_VCF && !c->quiet) {
+        int64_t reads_nonref = 0, overridden = 0;
+        vcf_phase_get_override_stats(&reads_nonref, &overridden);
+        if (overridden > 0) {
+            double pct = reads_nonref > 0
+                       ? 100.0 * (double)overridden / (double)reads_nonref : 0.0;
+            fprintf(stderr,
+                "  Note: %" PRId64 " of %" PRId64 " site-by-sample genotypes called non-reference\n"
+                "        from the reads have no record in '%s';\n"
+                "        the reference base was kept (%.1f%%). These are read-based calls\n"
+                "        made on quality thresholds alone, so they mix genuine variants the\n"
+                "        panel omits with sequencing and mapping error the panel correctly\n"
+                "        filters -- a non-zero count is normal and is not itself a problem.\n"
+                "        A high fraction is worth checking against --phasing split.\n",
+                overridden, reads_nonref,
+                a.phased_vcf ? a.phased_vcf : "(phased VCF)", pct);
+        }
     }
 
     /* Per-locus sequence count comes from results[].n_seqs (locus-level),

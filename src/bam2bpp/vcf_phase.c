@@ -147,6 +147,27 @@ static const int b4_idx[16] = {
      3, -1, -1, -1, -1, -1, -1, -1,
 };
 
+/* Sites where the reads show a non-reference genotype for a PHASE_VCF sample
+ * but the VCF carries no record, so pass 1's reference base survives. The
+ * panel is treated as authoritative by design -- it filters sequencing error --
+ * but a filtered panel also omits rare and private variants, so this silently
+ * discards real polymorphism. Counted here and reported by the caller rather
+ * than changed, so the bias is visible without altering the science.
+ * Accumulated across loci; reset before the locus loop. */
+static int64_t g_reads_nonref  = 0;   /* pileup disagreed with the reference */
+static int64_t g_vcf_overridden = 0;  /* ... and the VCF had nothing to say */
+
+void vcf_phase_reset_override_stats(void)
+{
+    g_reads_nonref = g_vcf_overridden = 0;
+}
+
+void vcf_phase_get_override_stats(int64_t *reads_nonref, int64_t *overridden)
+{
+    if (reads_nonref) *reads_nonref = g_reads_nonref;
+    if (overridden)   *overridden   = g_vcf_overridden;
+}
+
 /* -------------------------------------------------------------------------
  * Pass 1: BAM pileup, per-sample dispatch.
  *
@@ -171,7 +192,8 @@ static int64_t pass1_coverage(BamFile      **bams,
                                const Locus   *loc,
                                const char    *ref_seq,
                                const Args    *args,
-                               char         **seqs)
+                               char         **seqs,
+                               unsigned char *nonref)
 {
     char region[1024];
     snprintf(region, sizeof(region),
@@ -204,6 +226,11 @@ static int64_t pass1_coverage(BamFile      **bams,
 
     bam_mplp_t mplp = bam_mplp_init(n_bams, cov_read, data);
     bam_mplp_set_maxcnt(mplp, args->max_depth);
+    /* Mates of an overlapping pair sequence the same molecule twice. Counting
+     * both inflates depth and makes a single error look like twice the
+     * evidence. htslib resolves the overlap for us; bcftools mpileup enables
+     * this by default (MPLP_SMART_OVERLAPS) and only -x turns it off. */
+    bam_mplp_init_overlaps(mplp);
 
     int64_t total_depth = 0;
     int tid, pos;
@@ -235,8 +262,18 @@ static int64_t pass1_coverage(BamFile      **bams,
 
             switch (bams[i]->sample_phasing) {
             case PHASE_VCF: {
-                /* Write REF to both haplotypes; pass 2 overwrites variants. */
+                /* Write REF to both haplotypes; pass 2 overwrites variants.
+                 * Note where the reads themselves disagree with the reference,
+                 * so that anything pass 2 does not revisit can be reported as
+                 * polymorphism the VCF caused us to drop. */
                 char rb = ref_seq[offset];
+                if (nonref) {
+                    char call = call_iupac(&bc, args->min_dp, args->het_freq);
+                    if (call != 'N' && call != rb) {
+                        nonref[(size_t)i * (size_t)(loc->end - loc->start) + offset] = 1;
+                        g_reads_nonref++;
+                    }
+                }
                 seqs[seq_offset[i]][offset]     = rb;
                 seqs[seq_offset[i] + 1][offset] = rb;
                 break;
@@ -294,7 +331,8 @@ static void pass2_vcf(VcfPhase     *vcf,
                       const int    *seq_offset,   /* bam[i] → starting seq index */
                       const Locus  *loc,
                       const Args   *args,
-                      char        **seqs)
+                      char        **seqs,
+                      unsigned char *nonref)
 {
     char region[1024];
     snprintf(region, sizeof(region),
@@ -366,6 +404,10 @@ static void pass2_vcf(VcfPhase     *vcf,
 
             int h1 = seq_offset[bi];
             int h2 = seq_offset[bi] + 1;
+            /* pass 2 has a record here, so whatever the reads showed is
+               accounted for -- drop any mark pass 1 left. */
+            if (nonref)
+                nonref[(size_t)bi * (size_t)(loc->end - loc->start) + offset] = 0;
 
             /* Per-sample DP check */
             int dp = (dp_arr && vi < ndp_arr &&
@@ -537,9 +579,16 @@ int process_locus_vcf(BamFile       **bams,
      * full base calls for IUPAC/HAPLOID/SPLIT).
      * ------------------------------------------------------------------*/
 
+    /* One byte per (PHASE_VCF sample, position): set where the reads disagree
+     * with the reference, cleared by pass 2 wherever the VCF has a record.
+     * Whatever is still set afterwards is polymorphism the VCF discarded. */
+    unsigned char *nonref = NULL;
+    if (n_phased > 0)
+        nonref = calloc((size_t)n_bams * (size_t)locus_len, 1);
+
     int64_t total_depth = pass1_coverage(bams, n_bams, seq_offset, seq_count,
-                                         loc, ref_seq, args, seqs);
-    if (total_depth < 0) goto fail;
+                                         loc, ref_seq, args, seqs, nonref);
+    if (total_depth < 0) { free(nonref); goto fail; }
 
     /* ------------------------------------------------------------------
      * Pass 2: VCF phased GTs → overwrite variant positions for PHASE_VCF
@@ -547,7 +596,19 @@ int process_locus_vcf(BamFile       **bams,
      * ------------------------------------------------------------------*/
 
     if (n_phased > 0) {
-        pass2_vcf(vcf, bams, n_bams, bam_to_vcf, seq_offset, loc, args, seqs);
+        pass2_vcf(vcf, bams, n_bams, bam_to_vcf, seq_offset, loc, args, seqs,
+                  nonref);
+    }
+
+    if (nonref) {
+        for (int i = 0; i < n_bams; i++) {
+            if (bams[i]->sample_phasing != PHASE_VCF) continue;
+            for (int o = 0; o < locus_len; o++) {
+                if (!nonref[(size_t)i * (size_t)locus_len + o]) continue;
+                g_vcf_overridden++;
+            }
+        }
+        free(nonref);
     }
 
     /* ------------------------------------------------------------------

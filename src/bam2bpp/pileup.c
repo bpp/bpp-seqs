@@ -305,6 +305,11 @@ int process_locus(BamFile **bams, int n_bams,
 
     bam_mplp_t mplp = bam_mplp_init(n_bams, plp_read, data);
     bam_mplp_set_maxcnt(mplp, args->max_depth);
+    /* Mates of an overlapping pair sequence the same molecule twice. Counting
+     * both inflates depth and makes a single error look like twice the
+     * evidence. htslib resolves the overlap for us; bcftools mpileup enables
+     * this by default (MPLP_SMART_OVERLAPS) and only -x turns it off. */
+    bam_mplp_init_overlaps(mplp);
 
     int64_t total_depth = 0;
     int64_t n_observed  = 0;   /* sample × position pairs yielded by mplp */
