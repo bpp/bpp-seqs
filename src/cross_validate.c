@@ -1,4 +1,5 @@
 #include "cross_validate.h"
+#include "sanity.h"
 
 #include <stdio.h>
 #include <stdlib.h>
@@ -56,18 +57,27 @@ static int sample_in_bams(FileInfo **files, int n, const char *name)
     return 0;
 }
 
-/* True if any sequence-bearing file lists this sample/sequence name. */
+/* True if any sequence-bearing file lists this sample/sequence name.
+ *
+ * Alignment sequence tags may carry a BPP `label^id` prefix, so they are
+ * compared on the id after the last '^' -- `^sample1` and `rana^sample1` both
+ * match the Imap entry `sample1`. VCF sample columns have no such convention,
+ * but running them through the same rule is harmless (a name without a caret
+ * is returned unchanged). */
 static int sample_in_seq_files(FileInfo **files, int n, const char *name)
 {
+    const char *want = sanity_seq_id(name);
     for (int i = 0; i < n; i++) {
         FileInfo *fi = files[i];
         if (fi->ft == BS_VCF || fi->ft == BS_GVCF) {
             for (int j = 0; j < fi->n_sample_names; j++) {
-                if (fi->sample_names[j] && strcmp(fi->sample_names[j], name) == 0) return 1;
+                if (fi->sample_names[j] &&
+                    strcmp(sanity_seq_id(fi->sample_names[j]), want) == 0) return 1;
             }
         } else if (fi->ft == BS_FASTA_MSA || fi->ft == BS_PHYLIP || fi->ft == BS_NEXUS) {
             for (int j = 0; j < fi->n_sequence_names; j++) {
-                if (fi->sequence_names[j] && strcmp(fi->sequence_names[j], name) == 0) return 1;
+                if (fi->sequence_names[j] &&
+                    strcmp(sanity_seq_id(fi->sequence_names[j]), want) == 0) return 1;
             }
         }
     }

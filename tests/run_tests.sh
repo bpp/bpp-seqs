@@ -1000,6 +1000,57 @@ EOF
 }
 run "70. multiple single-locus NEXUS files each become a locus" t_nexus_multifile
 
+# 71: BPP sequence tags are `label^id`, and everything up to the last caret is
+# decoration -- `^s1` and `rana^s1` are both individual `s1`. The Imap keys on
+# the id, so cross-validation must not report these as unmatched.
+t_caret_imap_match() {
+    cat > "$tmp/caret.phy" <<'EOF'
+2 4
+
+^s1    ACGT
+rana^s2    ACGA
+EOF
+    printf 's1\tP\ns2\tQ\n' > "$tmp/caret.imap"
+    out=$("$bin" --keep-invariant --min-length 1 --out "$tmp/caret" \
+          "$tmp/caret.phy" "$tmp/caret.imap" 2>&1) || return 1
+    ! grep -q UNMATCHED_IMAP_SAMPLE <<<"$out"
+}
+run "71. sequence tags 'label^id' match the Imap on the post-caret id" t_caret_imap_match
+
+# 72: loci in a multi-locus file may carry different numbers of sequences --
+# each locus is independent under the MSC, so a study that sequenced different
+# individuals per locus is normal (BPP's own frogs example is 21/28/28/24/30).
+t_varying_nseq() {
+    cat > "$tmp/vary.phy" <<'EOF'
+2 4
+
+^s1    ACGT
+^s2    ACGA
+
+3 4
+
+^s1    TTGT
+^s2    TTGA
+^s3    TTGC
+EOF
+    printf 's1\tP\ns2\tQ\ns3\tQ\n' > "$tmp/vary.imap"
+    "$bin" --quiet --keep-invariant --min-length 1 --out "$tmp/vary" \
+        "$tmp/vary.phy" "$tmp/vary.imap" >/dev/null 2>&1 || return 1
+    # both loci survive, keeping their own sequence counts
+    [ "$(grep -cE '^ *2 +4 *$' "$tmp/vary.txt")" -eq 1 ] &&
+    [ "$(grep -cE '^ *3 +4 *$' "$tmp/vary.txt")" -eq 1 ]
+}
+run "72. loci may have different sequence counts within one file" t_varying_nseq
+
+# 73: the sample set of a multi-locus file is the union across loci, so an
+# individual appearing only in a later locus must still match the Imap.
+t_union_across_loci() {
+    out=$("$bin" --dry-run "$tmp/vary.phy" "$tmp/vary.imap" 2>&1) || return 1
+    # s3 occurs only in locus 2
+    ! grep -q "UNMATCHED_IMAP_SAMPLE" <<<"$out"
+}
+run "73. sample names are collected from every locus, not just the first" t_union_across_loci
+
 # ── Summary ───────────────────────────────────────────────────────────────
 echo
 echo "Tests: $pass passed, $fail failed"

@@ -1231,6 +1231,68 @@ static void validate_phylip(const char *path, FileInfo *fi, int nseq, int nsites
     free(names); free(lens);
 }
 
+/* ── distinct-name collector ────────────────────────────────────────────
+ *
+ * A multi-locus PHYLIP/BPP file repeats the same sequence tags in every locus
+ * block, and different loci may carry different subsets of individuals. To
+ * report the file's sample set we need the union across loci, which means
+ * deduplicating potentially millions of rows -- so this keeps a small hash set
+ * rather than rescanning an array. Insertion order is preserved. */
+typedef struct {
+    char  **items;      /* insertion-ordered, owned */
+    int     n;
+    int    *table;      /* open-addressed indices into items; -1 = empty */
+    int     tcap;
+} NameSet;
+
+static uint64_t name_hash(const char *s)
+{
+    uint64_t h = 1469598103934665603ULL;          /* FNV-1a */
+    for (const unsigned char *p = (const unsigned char *)s; *p; p++) {
+        h ^= *p;
+        h *= 1099511628211ULL;
+    }
+    return h;
+}
+
+static void nameset_init(NameSet *s)
+{
+    s->items = NULL; s->n = 0; s->tcap = 64;
+    s->table = (int *)malloc(sizeof(int) * (size_t)s->tcap);
+    for (int i = 0; i < s->tcap; i++) s->table[i] = -1;
+}
+
+static void nameset_rehash(NameSet *s)
+{
+    int ncap = s->tcap * 2;
+    int *nt = (int *)malloc(sizeof(int) * (size_t)ncap);
+    for (int i = 0; i < ncap; i++) nt[i] = -1;
+    for (int i = 0; i < s->n; i++) {
+        int j = (int)(name_hash(s->items[i]) & (uint64_t)(ncap - 1));
+        while (nt[j] != -1) j = (j + 1) & (ncap - 1);
+        nt[j] = i;
+    }
+    free(s->table);
+    s->table = nt;
+    s->tcap  = ncap;
+}
+
+/* Add `name` if absent. Returns 1 when it was newly inserted. */
+static int nameset_add(NameSet *s, const char *name)
+{
+    if (s->n * 2 >= s->tcap) nameset_rehash(s);
+    int j = (int)(name_hash(name) & (uint64_t)(s->tcap - 1));
+    while (s->table[j] != -1) {
+        if (strcmp(s->items[s->table[j]], name) == 0) return 0;
+        j = (j + 1) & (s->tcap - 1);
+    }
+    s->items = (char **)realloc(s->items, sizeof(char *) * (size_t)(s->n + 1));
+    s->items[s->n] = xstrdup(name);
+    s->table[j] = s->n;
+    s->n++;
+    return 1;
+}
+
 static void inspect_phylip(const char *path, FileInfo *fi)
 {
     gzFile gz = gzopen(path, "rb");
@@ -1294,28 +1356,43 @@ static void inspect_phylip(const char *path, FileInfo *fi)
     if (tot > 0) fi->phylip_missing_fraction = (double)miss / (double)tot;
     gzclose(gz);
 
-    /* Second pass: capture the first nseq sample names so cross-validate
-     * can match against the Imap. */
+    /* Second pass: capture the sample names so cross-validate can match them
+     * against the Imap. A multi-locus file must be walked in full, not just
+     * its first block: loci are independent under the multispecies coalescent,
+     * so a later locus may hold individuals the first one lacks. Within each
+     * locus only the first n_seqs non-blank rows are named (later rows in an
+     * interleaved layout are bare sequence continuations). */
     gz = gzopen(path, "rb");
     if (gz) {
-        gzgets(gz, line, sizeof(line));  /* header */
-        char **names = (char **)calloc((size_t)nseq, sizeof(char *));
-        int got = 0;
-        while (got < nseq && gzgets(gz, line, sizeof(line)) != NULL) {
+        NameSet set;
+        nameset_init(&set);
+        int want = 0;                    /* named rows still expected */
+        while (gzgets(gz, line, sizeof(line)) != NULL) {
             int empty = 1;
             for (char *c = line; *c; c++) if (!isspace((unsigned char)*c)) { empty = 0; break; }
             if (empty) continue;
+
+            int a = 0, b = 0; char tail[8] = {0};
+            int scanned = sscanf(line, " %d %d %7s", &a, &b, tail);
+            if (scanned == 2 && a > 0 && b > 0) {   /* locus header */
+                want = a;
+                continue;
+            }
+            if (want <= 0) continue;                /* unnamed continuation row */
+
             char *q = line;
             while (*q && !isspace((unsigned char)*q)) q++;
             size_t nlen = (size_t)(q - line);
             if (nlen == 0) continue;
-            names[got] = (char *)malloc(nlen + 1);
-            memcpy(names[got], line, nlen);
-            names[got][nlen] = '\0';
-            got++;
+            char saved = *q;
+            *q = '\0';
+            nameset_add(&set, line);
+            *q = saved;
+            want--;
         }
-        fi->sequence_names = names;
-        fi->n_sequence_names = got;
+        free(set.table);
+        fi->sequence_names   = set.items;
+        fi->n_sequence_names = set.n;
         gzclose(gz);
     }
 

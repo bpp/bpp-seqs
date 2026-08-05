@@ -6,11 +6,17 @@
 
 void sanity_report_init(SanityReport *r) { memset(r, 0, sizeof(*r)); }
 
-char *sanity_individual_id(const char *seq_name)
+const char *sanity_seq_id(const char *seq_name)
 {
     if (!seq_name) return NULL;
     const char *caret = strrchr(seq_name, '^');
-    const char *id = caret ? caret + 1 : seq_name;
+    return caret ? caret + 1 : seq_name;
+}
+
+char *sanity_individual_id(const char *seq_name)
+{
+    if (!seq_name) return NULL;
+    const char *id = sanity_seq_id(seq_name);
     size_t n = strlen(id);
     char *r = (char *)malloc(n + 1);
     if (!r) return NULL;

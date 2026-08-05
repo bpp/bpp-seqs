@@ -29,6 +29,15 @@ void sanity_report_init(SanityReport *r);
  * last '^', or the whole name if no caret is present. Caller frees. */
 char *sanity_individual_id(const char *seq_name);
 
+/* Same rule, without allocating: a pointer into seq_name just past the last
+ * '^', or seq_name itself when there is no caret.
+ *
+ * BPP sequence tags are written `label^id`, and everything up to and including
+ * the last caret is decoration -- `^sample1` and `rana^sample1` are both the
+ * individual `sample1`, which is the name an Imap keys on. Any comparison
+ * between a sequence name and an Imap sample must therefore go through this. */
+const char *sanity_seq_id(const char *seq_name);
+
 /* Validate a single locus's alignment. Sanitizes invalid characters in
  * seqs[] to 'N' in place. Critical errors are logged to err.
  *

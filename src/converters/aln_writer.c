@@ -64,7 +64,9 @@ int write_alignment_outputs(const char *out_prefix,
     int *passes = (int *)calloc((size_t)n_loci, sizeof(int));
     int n_pass = 0;
     int n_too_short = 0, n_high_missing = 0, n_insufficient = 0;
-    int n_seqs = (n_loci > 0) ? loci[0].n_seqs : 0;
+    /* Loci need not share a sequence count, so summarise with the widest
+     * passing locus rather than whichever happened to come first. */
+    int n_seqs = 0;
 
     for (int i = 0; i < n_loci; i++) {
         const char *skip = NULL;
@@ -75,7 +77,10 @@ int write_alignment_outputs(const char *out_prefix,
         if (!skip && miss > max_missing)              { skip = "high_missing";       n_high_missing++; }
         if (!skip && !keep_invariant && nsnp < min_snps) { skip = "insufficient_snps"; n_insufficient++; }
         passes[i] = (skip == NULL);
-        if (passes[i]) n_pass++;
+        if (passes[i]) {
+            n_pass++;
+            if (loci[i].n_seqs > n_seqs) n_seqs = loci[i].n_seqs;
+        }
         conversion_result_add_locus(cr, loci[i].name, loci[i].length, nsnp, miss, 0.0,
                                     passes[i] ? "passed" : "failed", skip);
     }

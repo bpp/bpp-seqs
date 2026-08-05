@@ -238,7 +238,6 @@ int convert_phylip(FileInfo **files, int n_files,
     LocusAln *all = NULL;
     int n_all = 0;
     int idx = 1;
-    int expected_seqs = -1;
 
     for (int i = 0; i < n_files; i++) {
         if (files[i]->ft != BS_PHYLIP) continue;
@@ -249,16 +248,11 @@ int convert_phylip(FileInfo **files, int n_files,
             fprintf(stderr, "Error: failed to load PHYLIP '%s'\n", files[i]->path);
             return 1;
         }
-        /* Enforce same n_seqs across all loci across all files */
-        for (int j = 0; j < nc; j++) {
-            if (expected_seqs < 0) expected_seqs = chunk[j].n_seqs;
-            else if (chunk[j].n_seqs != expected_seqs) {
-                fprintf(stderr,
-                    "Error: locus #%d in '%s' has %d sequences but %d expected\n",
-                    j + 1, files[i]->path, chunk[j].n_seqs, expected_seqs);
-                return 1;
-            }
-        }
+        /* Loci may legitimately carry different numbers of sequences: under
+         * the multispecies coalescent each locus is independent, so a study
+         * that sequenced different individuals at different loci is normal.
+         * BPP's own frogs example has 21/28/28/24/30. Each locus writes its
+         * own "<n_seqs> <n_sites>" header, so nothing here needs them equal. */
         all = (LocusAln *)realloc(all, sizeof(LocusAln) * (size_t)(n_all + nc));
         for (int j = 0; j < nc; j++) {
             all[n_all + j] = chunk[j];

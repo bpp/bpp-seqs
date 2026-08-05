@@ -96,7 +96,6 @@ int convert_fasta_msa(FileInfo **files, int n_files,
     }
 
     LocusAln *loci = (LocusAln *)calloc((size_t)n_msa, sizeof(LocusAln));
-    int n_seqs_expected = -1;
 
     for (int i = 0; i < n_msa; i++) {
         char **names = NULL, **seqs = NULL;
@@ -105,13 +104,9 @@ int convert_fasta_msa(FileInfo **files, int n_files,
             fprintf(stderr, "Error: failed to load MSA '%s'\n", msas[i]->path);
             free(msas); free(loci); return 1;
         }
-        if (n_seqs_expected < 0) n_seqs_expected = n;
-        else if (n != n_seqs_expected) {
-            fprintf(stderr, "Error: MSA '%s' has %d sequences but %d expected\n",
-                msas[i]->path, n, n_seqs_expected);
-            for (int j = 0; j < n; j++) { free(names[j]); free(seqs[j]); }
-            free(names); free(seqs); free(msas); free(loci); return 1;
-        }
+        /* Per-locus sequence counts may differ -- see the note in
+         * phylip2bpp.c. Each locus is written with its own header, so an MSA
+         * missing some individuals is fine. */
 
         const char *bn = strrchr(msas[i]->path, '/');
         bn = bn ? bn + 1 : msas[i]->path;
