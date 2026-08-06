@@ -13,6 +13,7 @@
 
 #include "bam2bpp.h"
 #include "vcf_phase.h"
+#include "samtools_consensus.h"
 
 /* -------------------------------------------------------------------------
  * IUPAC table (re-used from genotype.c logic, kept local here)
@@ -581,13 +582,54 @@ int process_locus_vcf(BamFile       **bams,
 
     /* One byte per (PHASE_VCF sample, position): set where the reads disagree
      * with the reference, cleared by pass 2 wherever the VCF has a record.
-     * Whatever is still set afterwards is polymorphism the VCF discarded. */
+     * Whatever is still set afterwards is a site the reads call non-reference
+     * and the VCF never mentions. */
     unsigned char *nonref = NULL;
     if (n_phased > 0)
         nonref = calloc((size_t)n_bams * (size_t)locus_len, 1);
 
+    /* The marks come from whichever caller --caller selected, so the report
+     * describes the evidence on the same terms the rest of the run uses.
+     *
+     * With the consensus caller that means a separate pass: the samtools model
+     * works a sample at a time over a region, not column by column across
+     * samples, so it cannot be folded into the shared pileup below. It is
+     * worth the second pass -- the counts caller has no error model, so a
+     * single miscalled base reads as evidence of a variant the panel dropped,
+     * which is exactly the false alarm this report should not raise. */
+    int mark_in_pass1 = (args->caller == CALLER_COUNTS);
+
+    if (nonref && args->caller == CALLER_CONSENSUS) {
+        BppsConsOpts co;
+        bpps_cons_opts_init(&co);
+        co.min_depth = args->min_dp;
+        co.min_mqual = args->min_mq;
+        co.min_qual  = args->min_bq;
+        co.del_char  = 'N';
+
+        BppsCons *cons = bpps_cons_init(&co);
+        char     *cs   = cons ? malloc((size_t)locus_len + 1) : NULL;
+        if (cons && cs) {
+            for (int i = 0; i < n_bams; i++) {
+                if (bams[i]->sample_phasing != PHASE_VCF) continue;
+                if (bpps_cons_region(cons, bams[i]->fp, bams[i]->hdr,
+                                     bams[i]->idx, loc->chrom,
+                                     loc->start, loc->end, cs) != 0)
+                    continue;
+                for (int o = 0; o < locus_len; o++) {
+                    if (cs[o] == 'N' || cs[o] == ref_seq[o]) continue;
+                    nonref[(size_t)i * (size_t)locus_len + o] = 1;
+                    g_reads_nonref++;
+                }
+            }
+        }
+        free(cs);
+        bpps_cons_free(cons);
+    }
+
     int64_t total_depth = pass1_coverage(bams, n_bams, seq_offset, seq_count,
-                                         loc, ref_seq, args, seqs, nonref);
+                                         loc, ref_seq, args, seqs,
+                                         mark_in_pass1 ? nonref : NULL);
     if (total_depth < 0) { free(nonref); goto fail; }
 
     /* ------------------------------------------------------------------

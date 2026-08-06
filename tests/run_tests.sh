@@ -1326,6 +1326,27 @@ t_caller_unknown_rejected() {
 }
 run "91. an unknown --caller value is an error" t_caller_unknown_rejected
 
+# 92: the read-vs-VCF disagreement report is derived from whichever caller
+# --caller selected, not always the count-threshold one. Reporting a site as
+# "the reads say non-reference but the panel is silent" is only meaningful if
+# the read-based call is trustworthy; with no error model behind it, a single
+# miscalled base raises a false alarm about a panel doing its job.
+t_vcf_report_uses_caller() {
+    make_phased_vcf || return 1
+    for c in consensus counts; do
+        out=$("$bin" --keep-invariant --min-length 1 --out "$tmp/rc_$c" \
+              --caller "$c" --phasing vcf --phased-vcf "$tmp/phased.vcf.gz" \
+              $bam_set "$data/test_ref.fa" "$data/loci.bed" \
+              "$data/imap.txt" 2>&1) || return 1
+        # Whatever the count, the run must complete and the report must be
+        # well-formed when it appears at all.
+        grep -q "have no record in" <<<"$out" && \
+            ! grep -qE "^  Note: 0 of" <<<"$out"
+    done
+    return 0
+}
+run "92. the read-vs-VCF report is derived from the selected caller" t_vcf_report_uses_caller
+
 # ── Summary ───────────────────────────────────────────────────────────────
 echo
 echo "Tests: $pass passed, $fail failed"

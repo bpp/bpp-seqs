@@ -573,15 +573,16 @@ static int run_bam2bpp(const CLI *c, FileInfo **files, int n_files,
             double pct = reads_nonref > 0
                        ? 100.0 * (double)overridden / (double)reads_nonref : 0.0;
             fprintf(stderr,
-                "  Note: %" PRId64 " of %" PRId64 " site-by-sample genotypes called non-reference\n"
-                "        from the reads have no record in '%s';\n"
-                "        the reference base was kept (%.1f%%). These are read-based calls\n"
-                "        made on quality thresholds alone, so they mix genuine variants the\n"
-                "        panel omits with sequencing and mapping error the panel correctly\n"
-                "        filters -- a non-zero count is normal and is not itself a problem.\n"
-                "        A high fraction is worth checking against --phasing split.\n",
+                "  Note: %" PRId64 " of %" PRId64 " site-by-sample genotypes called\n"
+                "        non-reference from the reads have no record in '%s';\n"
+                "        the reference base was kept (%.1f%%). Read-based calls mix genuine\n"
+                "        variants the panel omits with sequencing and mapping error the\n"
+                "        panel correctly filters, so a non-zero count is normal and is not\n"
+                "        itself a problem. Counted with the %s caller; a high fraction is\n"
+                "        worth checking against --phasing split.\n",
                 overridden, reads_nonref,
-                a.phased_vcf ? a.phased_vcf : "(phased VCF)", pct);
+                a.phased_vcf ? a.phased_vcf : "(phased VCF)", pct,
+                a.caller == CALLER_COUNTS ? "counts" : "consensus");
         }
     }
 

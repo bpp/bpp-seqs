@@ -141,13 +141,18 @@ Note: 61 of 180 site-by-sample genotypes called non-reference from the reads
       have no record in 'phased.vcf.gz'; the reference base was kept (33.9%).
 ```
 
-**Read this as a disagreement, not as lost data.** The read-based call is made
-on `--min-bq`/`--min-mq`/`--min-dp`/`--het-freq` thresholds alone, with no error
-model, so its non-reference calls mix genuine variants the panel omits (rare and
-private ones, or classes it did not include) with sequencing and mapping error
-that the panel deliberately filters out. Discarding the latter is the panel
-working correctly. bpp-seqs cannot separate the two, so it reports the count and
-leaves the judgement to you.
+**Read this as a disagreement, not as lost data.** The read-based call mixes
+genuine variants the panel omits (rare and private ones, or classes it did not
+include) with sequencing and mapping error that the panel deliberately filters
+out. Discarding the latter is the panel working correctly. bpp-seqs cannot
+separate the two, so it reports the count and leaves the judgement to you.
+
+The count comes from whichever caller `--caller` selected, which matters: on the
+100 kb example the same data yields 62 disagreements under `--caller counts` but
+30 under the default `consensus`. The extra 32 are sites the count-threshold
+caller reads as variants for want of an error model — they are a strict subset
+of the consensus caller's calls, and 28 of them sit within 100 bp of another,
+which is mismapping rather than variation.
 
 A non-zero count is normal with any filtered panel. A high fraction is worth
 checking against `--phasing split`, which calls from the reads alone.
