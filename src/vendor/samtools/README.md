@@ -57,8 +57,20 @@ cd ../../..
 make clean && make && ./tests/run_tests.sh
 ```
 
-Then update the pinned version above, and `bpps_cons_samtools_version()` in
-`../samtools_consensus.c`.
+Then update the pinned version in all four places that record it — a test
+(93) fails if they drift apart:
+
+| Where | What |
+|---|---|
+| this README | the **Pinned version** row above |
+| `../samtools_consensus.c` | `bpps_cons_samtools_version()` |
+| `tests/run_tests.sh` | `PINNED_SAMTOOLS` |
+| `.github/workflows/ci.yml` | `SAMTOOLS_VERSION` |
+
+CI builds that exact release from source rather than taking whatever apt or
+brew ships, and runs the suite with `BPP_SEQS_STRICT=1` so a skipped oracle
+test fails the build. Without that, an unpinned samtools would make the oracle
+tests skip and CI would report a clean run having verified nothing here.
 
 **Do not edit these files.** The wrapper reaches upstream's `static` internals
 (`consensus_init`, `cons_prob_recall`) by including `bam_consensus.c`

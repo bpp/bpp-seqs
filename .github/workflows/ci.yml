@@ -4,11 +4,25 @@ name: ci
 # linked htslib (apt/brew) -- the static build lives in release.yml. The suite
 # needs the htslib CLI tools (bgzip/tabix) plus samtools/bcftools for a few
 # VCF/BAM fixtures.
+#
+# samtools is built from a pinned source release rather than taken from
+# apt/brew. src/vendor/samtools holds that release's consensus caller, and the
+# oracle tests assert our output matches `samtools consensus` byte for byte --
+# which only the matching version can be expected to do. With an unpinned
+# samtools those tests skip themselves, and CI would report a clean run having
+# verified nothing about the caller. BPP_SEQS_STRICT=1 turns any such skip into
+# a failure, so that cannot happen quietly.
+#
+# Keep SAMTOOLS_VERSION in step with PINNED_SAMTOOLS in tests/run_tests.sh and
+# the pinned version in src/vendor/samtools/README.md.
 
 on:
   push:
     branches: [main]
   pull_request:
+
+env:
+  SAMTOOLS_VERSION: "1.23.1"
 
 jobs:
   test:
@@ -21,15 +35,46 @@ jobs:
     steps:
       - uses: actions/checkout@v4
 
-      - name: Install htslib + samtools/bcftools (Linux)
+      - name: Install htslib + bcftools (Linux)
         if: runner.os == 'Linux'
         run: |
           sudo apt-get update
-          sudo apt-get install -y libhts-dev samtools bcftools tabix
+          sudo apt-get install -y libhts-dev bcftools tabix \
+                                  libbz2-dev liblzma-dev libcurl4-openssl-dev
 
-      - name: Install htslib + samtools/bcftools (macOS)
+      - name: Install htslib + bcftools (macOS)
         if: runner.os == 'macOS'
-        run: brew install htslib samtools bcftools
+        run: brew install htslib bcftools
+
+      - name: Cache pinned samtools
+        id: cache-samtools
+        uses: actions/cache@v4
+        with:
+          path: ~/.local/samtools
+          key: samtools-${{ env.SAMTOOLS_VERSION }}-${{ runner.os }}
+
+      - name: Build pinned samtools
+        if: steps.cache-samtools.outputs.cache-hit != 'true'
+        run: |
+          set -euo pipefail
+          v="$SAMTOOLS_VERSION"
+          curl -fsSL -o samtools.tar.bz2 \
+            "https://github.com/samtools/samtools/releases/download/$v/samtools-$v.tar.bz2"
+          tar xjf samtools.tar.bz2
+          cd "samtools-$v"
+          ./configure --prefix="$HOME/.local/samtools" --without-curses
+          make -j"$(getconf _NPROCESSORS_ONLN)"
+          make install
+
+      - name: Put pinned samtools on PATH
+        run: echo "$HOME/.local/samtools/bin" >> "$GITHUB_PATH"
+
+      - name: Confirm samtools is the pinned version
+        run: |
+          set -euo pipefail
+          got="$(samtools --version | head -1 | awk '{print $2}')"
+          echo "samtools: $got (expected $SAMTOOLS_VERSION)"
+          test "$got" = "$SAMTOOLS_VERSION"
 
       - name: Build
         run: make
@@ -37,5 +82,9 @@ jobs:
       - name: Version smoke check
         run: ./bpp-seqs --version
 
+      # BPP_SEQS_STRICT=1 fails the run if any test skips, so the oracle tests
+      # cannot silently opt out of verifying the vendored caller.
       - name: Test
+        env:
+          BPP_SEQS_STRICT: "1"
         run: make test

@@ -16,10 +16,25 @@ trap 'rm -rf "$tmp"' EXIT
 
 pass=0
 fail=0
+skip=0
 
+# A test may return 77 to mean "not applicable here" -- the oracle tests use
+# this when samtools is absent or is not the pinned version. Reported as SKIP
+# rather than PASS, so a run that verified nothing cannot look like a clean
+# one. Set BPP_SEQS_STRICT=1 (CI does) to turn any skip into a failure.
 run() {
     local name="$1"; shift
-    if "$@"; then
+    "$@"
+    local rc=$?
+    if [ "$rc" -eq 77 ]; then
+        if [ "${BPP_SEQS_STRICT:-0}" = "1" ]; then
+            echo "  FAIL  $name (skipped, but BPP_SEQS_STRICT=1)"
+            fail=$((fail + 1))
+        else
+            echo "  SKIP  $name"
+            skip=$((skip + 1))
+        fi
+    elif [ "$rc" -eq 0 ]; then
         echo "  PASS  $name"
         pass=$((pass + 1))
     else
@@ -1077,7 +1092,7 @@ t_wrong_reference() {
     # exactly what a second build of one assembly looks like.
     printf '>chr1\n' > "$tmp/wrongref.fa"
     python3 -c "print('\n'.join(['A'*60]*100))" >> "$tmp/wrongref.fa"
-    samtools faidx "$tmp/wrongref.fa" 2>/dev/null || return 0   # skip if no samtools
+    samtools faidx "$tmp/wrongref.fa" 2>/dev/null || return 77  # no samtools
     out=$("$bin" --out "$tmp/wr" "$data/ind1.bam" "$tmp/wrongref.fa" \
           "$data/loci.bed" "$data/imap.txt" 2>&1)
     grep -q REFERENCE_MISMATCH <<<"$out"
@@ -1087,7 +1102,7 @@ run "75. BAM aligned to a different reference build is detected" t_wrong_referen
 # 76: and detection must actually stop the conversion -- an error that still
 # writes plausible-looking sequences is not a safeguard.
 t_wrong_reference_blocks() {
-    [ -f "$tmp/wrongref.fa.fai" ] || return 0
+    [ -f "$tmp/wrongref.fa.fai" ] || return 77
     rm -f "$tmp/wrb".*
     "$bin" --quiet --out "$tmp/wrb" "$data/ind1.bam" "$tmp/wrongref.fa" \
         "$data/loci.bed" "$data/imap.txt" >/dev/null 2>&1
@@ -1129,7 +1144,7 @@ bam_set="$data/ind1.bam $data/ind2.bam $data/ind3.bam $data/ind4.bam"
 # lookup with nothing, which is indistinguishable from "no heterozygotes" and
 # silently emits reference bases at variable sites.
 t_phased_vcf_wrong_contig() {
-    make_phase_vcf pv_badctg 1 ind1 ind2 ind3 ind4 || return 0
+    make_phase_vcf pv_badctg 1 ind1 ind2 ind3 ind4 || return 77
     out=$("$bin" --keep-invariant --out "$tmp/pvb" --phasing vcf \
           --phased-vcf "$tmp/pv_badctg.vcf.gz" $bam_set \
           "$data/test_ref.fa" "$data/loci.bed" "$data/imap.txt" 2>&1)
@@ -1139,7 +1154,7 @@ run "78. phased VCF missing the BED chromosome is detected" t_phased_vcf_wrong_c
 
 # 79: and it must stop the run, not merely mention it.
 t_phased_vcf_blocks() {
-    [ -s "$tmp/pv_badctg.vcf.gz" ] || return 0
+    [ -s "$tmp/pv_badctg.vcf.gz" ] || return 77
     rm -f "$tmp/pvblk".*
     "$bin" --quiet --keep-invariant --out "$tmp/pvblk" --phasing vcf \
         --phased-vcf "$tmp/pv_badctg.vcf.gz" $bam_set \
@@ -1151,7 +1166,7 @@ run "79. a phased VCF that cannot phase refuses to convert" t_phased_vcf_blocks
 
 # 80: a VCF sharing no sample with the BAMs can phase nothing either.
 t_phased_vcf_disjoint_samples() {
-    make_phase_vcf pv_disj chr1 otherA otherB || return 0
+    make_phase_vcf pv_disj chr1 otherA otherB || return 77
     out=$("$bin" --keep-invariant --out "$tmp/pvd" --phasing vcf \
           --phased-vcf "$tmp/pv_disj.vcf.gz" $bam_set \
           "$data/test_ref.fa" "$data/loci.bed" "$data/imap.txt" 2>&1)
@@ -1162,7 +1177,7 @@ run "80. phased VCF sharing no sample with the BAMs is detected" t_phased_vcf_di
 # 81: partial overlap is legitimate -- that is how a phased reference panel is
 # combined with unphased genomes -- so it warns and still converts.
 t_phased_vcf_partial() {
-    make_phase_vcf pv_part chr1 ind1 ind2 || return 0
+    make_phase_vcf pv_part chr1 ind1 ind2 || return 77
     out=$("$bin" --keep-invariant --out "$tmp/pvp" --phasing vcf \
           --phased-vcf "$tmp/pv_part.vcf.gz" $bam_set \
           "$data/test_ref.fa" "$data/loci.bed" "$data/imap.txt" 2>&1) || return 1
@@ -1238,7 +1253,7 @@ oracle_matches() {   # $1=bam $2=chrom $3=beg $4=end $5=cutoff $6=min_depth
 
 # 84: the vendored model reproduces samtools exactly at default settings.
 t_oracle_default() {
-    oracle_available || return 0
+    oracle_available || return 77
     oracle_matches "$data/ind1.bam" chr1 0 2500 10 1
 }
 run "84. vendored consensus matches samtools consensus -A (defaults)" t_oracle_default
@@ -1246,7 +1261,7 @@ run "84. vendored consensus matches samtools consensus -A (defaults)" t_oracle_d
 # 85: ... and across cutoff / min-depth settings, which select different
 # branches of the emit logic (N-masking by quality vs by depth).
 t_oracle_params() {
-    oracle_available || return 0
+    oracle_available || return 77
     for spec in "0 1" "20 5" "30 10"; do
         set -- $spec
         oracle_matches "$data/ind1.bam" chr1 0 2500 "$1" "$2" || return 1
@@ -1257,7 +1272,7 @@ run "85. vendored consensus matches samtools across cutoff/depth settings" t_ora
 
 # 86: ... and for every fixture sample, not just one.
 t_oracle_samples() {
-    oracle_available || return 0
+    oracle_available || return 77
     for s in ind1 ind2 ind3 ind4; do
         [ -s "$data/$s.bam" ] || continue
         oracle_matches "$data/$s.bam" chr1 0 2500 10 1 || return 1
@@ -1269,7 +1284,7 @@ run "86. vendored consensus matches samtools for every sample" t_oracle_samples
 # 87: the wrapper returns exactly the requested span, in reference
 # coordinates, so per-locus columns line up across samples without alignment.
 t_oracle_length() {
-    oracle_available || return 0
+    oracle_available || return 77
     n=$("$oracle_bin" "$data/ind1.bam" chr1 100 1100 10 1 2>/dev/null \
         | tail -n +2 | tr -d '\n' | wc -c | tr -d ' ')
     [ "$n" -eq 1000 ]
@@ -1347,7 +1362,30 @@ t_vcf_report_uses_caller() {
 }
 run "92. the read-vs-VCF report is derived from the selected caller" t_vcf_report_uses_caller
 
+# 93: the pinned samtools version is recorded in four places -- this script,
+# the vendor README, the wrapper's version accessor, and the CI workflow. They
+# have to agree, or a sync silently leaves the oracle comparing against the
+# wrong release (or CI skipping it entirely).
+t_pinned_version_consistent() {
+    local readme wrapper ci
+    readme=$(grep -oE '`[0-9]+\.[0-9]+(\.[0-9]+)?`' \
+             "$root/src/vendor/samtools/README.md" | head -1 | tr -d '`')
+    wrapper=$(grep -oE 'return "[0-9]+\.[0-9]+(\.[0-9]+)?"' \
+              "$root/src/vendor/samtools_consensus.c" | grep -oE '[0-9][0-9.]*')
+    ci=$(grep -oE 'SAMTOOLS_VERSION: "[0-9]+\.[0-9]+(\.[0-9]+)?"' \
+         "$root/.github/workflows/ci.yml" | grep -oE '[0-9][0-9.]*')
+    [ -n "$readme" ] && [ -n "$wrapper" ] && [ -n "$ci" ] &&
+    [ "$readme" = "$PINNED_SAMTOOLS" ] &&
+    [ "$wrapper" = "$PINNED_SAMTOOLS" ] &&
+    [ "$ci" = "$PINNED_SAMTOOLS" ]
+}
+run "93. the pinned samtools version agrees everywhere it is recorded" t_pinned_version_consistent
+
 # ── Summary ───────────────────────────────────────────────────────────────
 echo
-echo "Tests: $pass passed, $fail failed"
+if [ "$skip" -gt 0 ]; then
+    echo "Tests: $pass passed, $fail failed, $skip skipped"
+else
+    echo "Tests: $pass passed, $fail failed"
+fi
 [[ $fail -eq 0 ]]
