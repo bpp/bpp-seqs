@@ -28,6 +28,39 @@
 #include <stdlib.h>
 #include <string.h>
 
+/* ── compatibility with older htslib ──────────────────────────────────────
+ *
+ * The vendored sources come from samtools 1.23.1 and expect its companion
+ * htslib. Two symbols they reference only from the threaded CLI path --
+ * hts_tpool_worker_id() and sam_hdr_set() -- do not exist in older htslib, and
+ * bpp-seqs otherwise builds against whatever htslib the system provides
+ * (Ubuntu ships 1.10, and 1.21 is common on HPC). Requiring htslib >= 1.23
+ * just to compile a code path we never enter would be a poor trade, so the
+ * call sites are redirected to inert stand-ins instead.
+ *
+ * Only main_consensus() and its thread_data() helper reach these; bpp-seqs
+ * drives consensus_base() directly and never spawns upstream's thread pool. */
+#include <htslib/hts.h>
+#include <htslib/sam.h>
+#include <htslib/thread_pool.h>
+
+#if !defined(HTS_VERSION) || HTS_VERSION < 102300
+#define hts_tpool_worker_id bpps_hts_tpool_worker_id
+#define sam_hdr_set         bpps_sam_hdr_set
+
+static int bpps_hts_tpool_worker_id(hts_tpool *pool)
+{
+    (void)pool;
+    return 0;          /* single-threaded: always worker 0 */
+}
+
+static int bpps_sam_hdr_set(samFile *fp, sam_hdr_t *h, int dup)
+{
+    (void)fp; (void)h; (void)dup;
+    return -1;         /* never called; upstream treats <0 as failure */
+}
+#endif
+
 /* ── the vendored model ───────────────────────────────────────────────── */
 
 /* Upstream is warning-clean under its own build flags, not under ours
