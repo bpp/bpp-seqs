@@ -1381,6 +1381,53 @@ t_pinned_version_consistent() {
 }
 run "93. the pinned samtools version agrees everywhere it is recorded" t_pinned_version_consistent
 
+# 94: under --phasing vcf, samples the panel cannot phase fall back to IUPAC
+# and are called from the reads. Those must go through --caller like any other
+# read-based call. They did not until the consensus pre-pass was extended to
+# them, which meant an unphased genome alongside a phased panel -- an archaic
+# sample beside modern ones, say -- silently kept the count-threshold caller
+# whatever was asked for.
+#
+# tests/data/errhet.bam is built for this: 10 reads over chr1:1000, two of them
+# carrying a Q20 mismatch. That is a minor-allele fraction of exactly 0.20, so
+# the count caller calls a heterozygote at --het-freq's default while a
+# likelihood model with a 1e-3 het prior calls homozygous. The fixture BAMs are
+# otherwise too clean to tell the callers apart, which is why an earlier version
+# of this test passed even with the fix reverted.
+errhet_base() {   # $1=caller  -> the base called at chr1:1000
+    printf 'errhet\tP\n' > "$tmp/eh.imap"
+    printf 'chr1\t995\t1005\tL\n' > "$tmp/eh.bed"
+    "$bin" --quiet --keep-invariant --min-length 1 --min-dp 4 \
+        --out "$tmp/eh_$1" --caller "$1" "$data/errhet.bam" "$data/test_ref.fa" \
+        "$tmp/eh.bed" "$tmp/eh.imap" >/dev/null 2>&1 || return 1
+    awk '/^\^errhet/{print substr($2,6,1); exit}' "$tmp/eh_$1.txt"
+}
+
+t_callers_differ_on_error_het() {
+    a=$(errhet_base consensus) || return 1
+    b=$(errhet_base counts)    || return 1
+    # The count caller sees MAF 0.20 and calls het; the model calls homozygous.
+    [ "$a" = "A" ] && [ "$b" = "M" ]
+}
+run "94. the callers differ on an error-driven heterozygote" t_callers_differ_on_error_het
+
+# 95: and that difference must survive the --phasing vcf fallback path.
+t_vcf_fallback_uses_caller() {
+    make_phase_vcf pv_half chr1 ind1 ind2 || return 77
+    printf 'ind1\tP\nind2\tP\nind3\tQ\nind4\tQ\nerrhet\tR\n' > "$tmp/fb.imap"
+    printf 'chr1\t995\t1005\tL\n' > "$tmp/fb.bed"
+    for c in consensus counts; do
+        "$bin" --quiet --keep-invariant --min-length 1 --min-dp 4 \
+            --out "$tmp/fb_$c" --caller "$c" --phasing vcf --max-missing 1.0 \
+            --phased-vcf "$tmp/pv_half.vcf.gz" $bam_set "$data/errhet.bam" \
+            "$data/test_ref.fa" "$tmp/fb.bed" "$tmp/fb.imap" >/dev/null 2>&1 || return 1
+    done
+    a=$(awk '/^\^errhet/{print substr($2,6,1); exit}' "$tmp/fb_consensus.txt")
+    b=$(awk '/^\^errhet/{print substr($2,6,1); exit}' "$tmp/fb_counts.txt")
+    [ "$a" = "A" ] && [ "$b" = "M" ]
+}
+run "95. IUPAC fallback under --phasing vcf honours --caller" t_vcf_fallback_uses_caller
+
 # ── Summary ───────────────────────────────────────────────────────────────
 echo
 if [ "$skip" -gt 0 ]; then

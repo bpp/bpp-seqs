@@ -180,6 +180,11 @@ void vcf_phase_get_override_stats(int64_t *reads_nonref, int64_t *overridden)
  *   full base call from the pileup column and write to the sample's
  *   sequence(s).  These samples are not touched by pass 2.
  *
+ * done[i] marks a sample whose sequence the caller already filled -- the
+ * consensus caller works per sample over a whole region, so those are written
+ * before this runs and must not be overwritten here. Their depth is still
+ * accumulated so the locus statistic stays comparable between callers.
+ *
  * seq_offset[i] gives the starting index in seqs[] for sample i; seq_count[i]
  * is 1 or 2 according to bams[i]->sample_phasing.
  *
@@ -194,7 +199,8 @@ static int64_t pass1_coverage(BamFile      **bams,
                                const char    *ref_seq,
                                const Args    *args,
                                char         **seqs,
-                               unsigned char *nonref)
+                               unsigned char *nonref,
+                               const unsigned char *done)
 {
     char region[1024];
     snprintf(region, sizeof(region),
@@ -259,6 +265,7 @@ static int64_t pass1_coverage(BamFile      **bams,
             }
             total_depth += bc.depth;
 
+            if (done && done[i]) continue;          /* filled by the caller */
             if (bc.depth < args->min_dp) continue;  /* stays 'N' */
 
             switch (bams[i]->sample_phasing) {
@@ -599,7 +606,19 @@ int process_locus_vcf(BamFile       **bams,
      * which is exactly the false alarm this report should not raise. */
     int mark_in_pass1 = (args->caller == CALLER_COUNTS);
 
-    if (nonref && args->caller == CALLER_CONSENSUS) {
+    /* Samples that fall back to IUPAC -- those absent from the panel, or with
+     * any unphased heterozygote -- are called from the reads alone, so the
+     * caller choice applies to them exactly as it does outside VCF mode. This
+     * is the path an unphased single-individual genome takes: an archaic
+     * sample alongside a phased modern panel, say. Handling it here rather
+     * than in pass 1 is what the samtools model requires, since it works a
+     * sample at a time over a region rather than column by column.
+     *
+     * Sequences filled here are marked so pass 1 leaves them alone. */
+    unsigned char *done = calloc((size_t)n_bams, 1);
+    if (!done) { free(nonref); goto fail; }
+
+    if (args->caller == CALLER_CONSENSUS) {
         BppsConsOpts co;
         bpps_cons_opts_init(&co);
         co.min_depth = args->min_dp;
@@ -611,15 +630,25 @@ int process_locus_vcf(BamFile       **bams,
         char     *cs   = cons ? malloc((size_t)locus_len + 1) : NULL;
         if (cons && cs) {
             for (int i = 0; i < n_bams; i++) {
-                if (bams[i]->sample_phasing != PHASE_VCF) continue;
+                Phasing ph = bams[i]->sample_phasing;
+                /* PHASE_VCF: called from the panel, not the reads -- only
+                 * consulted here to see where the reads disagree.
+                 * PHASE_IUPAC: called from the reads, so write it. */
+                if (ph != PHASE_VCF && ph != PHASE_IUPAC) continue;
                 if (bpps_cons_region(cons, bams[i]->fp, bams[i]->hdr,
                                      bams[i]->idx, loc->chrom,
                                      loc->start, loc->end, cs) != 0)
                     continue;
-                for (int o = 0; o < locus_len; o++) {
-                    if (cs[o] == 'N' || cs[o] == ref_seq[o]) continue;
-                    nonref[(size_t)i * (size_t)locus_len + o] = 1;
-                    g_reads_nonref++;
+
+                if (ph == PHASE_IUPAC) {
+                    memcpy(seqs[seq_offset[i]], cs, (size_t)locus_len);
+                    done[i] = 1;
+                } else if (nonref) {
+                    for (int o = 0; o < locus_len; o++) {
+                        if (cs[o] == 'N' || cs[o] == ref_seq[o]) continue;
+                        nonref[(size_t)i * (size_t)locus_len + o] = 1;
+                        g_reads_nonref++;
+                    }
                 }
             }
         }
@@ -629,8 +658,8 @@ int process_locus_vcf(BamFile       **bams,
 
     int64_t total_depth = pass1_coverage(bams, n_bams, seq_offset, seq_count,
                                          loc, ref_seq, args, seqs,
-                                         mark_in_pass1 ? nonref : NULL);
-    if (total_depth < 0) { free(nonref); goto fail; }
+                                         mark_in_pass1 ? nonref : NULL, done);
+    if (total_depth < 0) { free(nonref); free(done); goto fail; }
 
     /* ------------------------------------------------------------------
      * Pass 2: VCF phased GTs → overwrite variant positions for PHASE_VCF
@@ -641,6 +670,8 @@ int process_locus_vcf(BamFile       **bams,
         pass2_vcf(vcf, bams, n_bams, bam_to_vcf, seq_offset, loc, args, seqs,
                   nonref);
     }
+
+    free(done);
 
     if (nonref) {
         for (int i = 0; i < n_bams; i++) {
