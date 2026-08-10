@@ -39,8 +39,11 @@ jobs:
         if: runner.os == 'Linux'
         run: |
           sudo apt-get update
+          # libbz2/liblzma are needed to build the pinned samtools below.
+          # Do NOT add libcurl4-openssl-dev: libhts-dev pulls in the gnutls
+          # variant and the two conflict.
           sudo apt-get install -y libhts-dev bcftools tabix \
-                                  libbz2-dev liblzma-dev libcurl4-openssl-dev
+                                  libbz2-dev liblzma-dev
 
       - name: Install htslib + bcftools (macOS)
         if: runner.os == 'macOS'
