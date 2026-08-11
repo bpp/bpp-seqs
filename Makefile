@@ -71,6 +71,7 @@ SRCS := \
   src/bpp_parser.c \
   src/cmd_extract.c \
   src/cmd_windows.c \
+  src/cmd_mask.c \
   src/bam2bpp/pileup.c \
   src/bam2bpp/genotype.c \
   src/bam2bpp/locus.c \

@@ -19,6 +19,7 @@
 #include "sanity.h"
 #include "cmd_extract.h"
 #include "cmd_windows.h"
+#include "cmd_mask.h"
 #include "converters/converters.h"
 #include "converters/aln_writer.h"
 #include "bam2bpp/bam2bpp.h"
@@ -72,6 +73,8 @@ static void print_usage(FILE *fp, const char *prog)
 "                        an existing one's loci (by name, index, chrom, size).\n"
 "  windows INPUT         Tile a genome into fixed-size candidate loci and\n"
 "                        write them as a BED for the conversion flow below.\n"
+"  mask INPUT.txt        Replace positions outside a per-sample mappability\n"
+"                        mask with N in an existing BPP sequence file.\n"
 "\n"
 "General:\n"
 "  --out PREFIX          Output file prefix for BPP files (required for conversion)\n"
@@ -124,7 +127,9 @@ static void print_usage(FILE *fp, const char *prog)
 "  PREFIX.imap           the Imap actually used\n"
 "  PREFIX.stats.tsv      per-locus statistics\n"
 "  PREFIX.loci.tsv       the locus table\n"
-"\n"
+"\n",
+        BPP_SEQS_VERSION, prog, prog);
+    fprintf(fp,
 "Safeguards: reads aligned to a different reference than the one supplied, or\n"
 "BAMs aligned to different references as each other, are detected by comparing\n"
 "contig lengths (not just names -- assembly builds share contig names). Either\n"
@@ -135,8 +140,7 @@ static void print_usage(FILE *fp, const char *prog)
 "\n"
 "Exit status: 0 on success (including an inspection reporting missing items),\n"
 "1 on a conversion or system error. Long options must match exactly;\n"
-"abbreviations are rejected.\n",
-        BPP_SEQS_VERSION, prog, prog);
+"abbreviations are rejected.\n");
 }
 
 enum {
@@ -803,6 +807,9 @@ int main(int argc, char **argv)
     }
     if (strcmp(argv[1], "windows") == 0) {
         return cmd_windows(argc - 1, argv + 1);
+    }
+    if (strcmp(argv[1], "mask") == 0) {
+        return cmd_mask(argc - 1, argv + 1);
     }
     /* No verb matched → fall through to the existing inspect/convert flow. */
 

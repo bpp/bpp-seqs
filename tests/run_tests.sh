@@ -1428,6 +1428,78 @@ t_vcf_fallback_uses_caller() {
 }
 run "95. IUPAC fallback under --phasing vcf honours --caller" t_vcf_fallback_uses_caller
 
+# ── bpp-seqs mask: per-sample mappability masking ─────────────────────────
+#
+# Applied per site, not per locus: masks are per sample while loci are shared,
+# so dropping whole loci could not represent them. Positions outside a
+# sample's mask become N; samples absent from the manifest are untouched.
+
+mask_setup() {   # build a small BPP file with source coordinates
+    [ -s "$tmp/mk.txt" ] && return 0
+    "$bin" --quiet --keep-invariant --min-length 1 --out "$tmp/mk" \
+        $bam_set "$data/test_ref.fa" "$data/loci.bed" "$data/imap.txt" \
+        >/dev/null 2>&1 || return 1
+    [ -s "$tmp/mk.loci.tsv" ]
+}
+
+# 96: the coordinate conversion. .loci.tsv records source_start 1-based while
+# BEDs are 0-based half-open, so this asserts against a known interval rather
+# than trusting the arithmetic -- an off-by-one here would silently mask the
+# wrong bases, and a shifted sequence still looks like sequence.
+t_mask_coordinates() {
+    mask_setup || return 1
+    read -r c b e _ < "$data/loci.bed"          # first locus, 0-based BED
+    printf '%s\t%d\t%d\n' "$c" $((b + 10)) $((b + 20)) > "$tmp/m1.bed"
+    printf 'ind1\t%s/m1.bed\n' "$tmp" > "$tmp/masks.tsv"
+    "$bin" mask "$tmp/mk.txt" --masks "$tmp/masks.tsv" --quiet \
+        --out "$tmp/mkd" >/dev/null 2>&1 || return 1
+    # ind1 should keep exactly offsets 10..19 of the first locus.
+    seq=$(awk '/^\^ind1/{print $2; exit}' "$tmp/mkd.txt")
+    [ -n "$seq" ] || return 1
+    pre=$(printf '%s' "$seq" | cut -c1-10  | tr -d 'N')
+    mid=$(printf '%s' "$seq" | cut -c11-20 | tr -d 'N')
+    [ -z "$pre" ] && [ -n "$mid" ]
+}
+run "96. mask maps locus columns to genome coordinates correctly" t_mask_coordinates
+
+# 97: samples not listed in --masks are copied through untouched. This is how
+# panel-phased samples are left alone -- their bases came from a VCF, not from
+# read mapping, so a read-mappability mask does not apply to them.
+t_mask_leaves_others_alone() {
+    mask_setup || return 1
+    [ -s "$tmp/mkd.txt" ] || return 1
+    a=$(awk '/^\^ind2/{print $2; exit}' "$tmp/mk.txt")
+    b=$(awk '/^\^ind2/{print $2; exit}' "$tmp/mkd.txt")
+    [ -n "$a" ] && [ "$a" = "$b" ]
+}
+run "97. mask leaves samples absent from the manifest unchanged" t_mask_leaves_others_alone
+
+# 98: masking runs after the conversion's QC, so --max-missing must be
+# available to re-apply it; without that the surviving locus set no longer
+# means what the conversion reported.
+t_mask_refilters() {
+    mask_setup || return 1
+    printf '%s\t0\t1\n' "chrNOSUCH" > "$tmp/m0.bed"    # masks everything out
+    printf 'ind1\t%s/m0.bed\nind2\t%s/m0.bed\n' "$tmp" "$tmp" > "$tmp/masks0.tsv"
+    "$bin" mask "$tmp/mk.txt" --masks "$tmp/masks0.tsv" --quiet \
+        --max-missing 0.1 --out "$tmp/mkz" >/dev/null 2>&1
+    # Half the sequences are now all-N, so every locus exceeds 0.1 missing.
+    [ ! -s "$tmp/mkz.txt" ]
+}
+run "98. mask --max-missing re-applies the locus filter after masking" t_mask_refilters
+
+# 99: without locus provenance there is no way to know which genome positions
+# a locus covers, so this must be an error rather than a silent no-op.
+t_mask_needs_loci_tsv() {
+    mask_setup || return 1
+    cp "$tmp/mk.txt" "$tmp/noprov.txt"
+    rm -f "$tmp/noprov.loci.tsv"
+    printf 'ind1\t%s/m1.bed\n' "$tmp" > "$tmp/masks.tsv"
+    ! "$bin" mask "$tmp/noprov.txt" --masks "$tmp/masks.tsv" --quiet \
+        --out "$tmp/mkn" >/dev/null 2>&1
+}
+run "99. mask without .loci.tsv is an error, not a silent no-op" t_mask_needs_loci_tsv
+
 # ── Summary ───────────────────────────────────────────────────────────────
 echo
 if [ "$skip" -gt 0 ]; then
