@@ -1500,6 +1500,35 @@ t_mask_needs_loci_tsv() {
 }
 run "99. mask without .loci.tsv is an error, not a silent no-op" t_mask_needs_loci_tsv
 
+# 100: regression. A BPP sequence file carries no locus names, so the parser
+# synthesizes sequential "locusN" labels. When the .loci.tsv names are the
+# original (post-QC, non-contiguous) window indices, name-based matching
+# mis-binds rows to the wrong locus -- the first locus ends up with no
+# coordinates and is silently left unmasked. Binding must be positional: row i
+# of the .loci.tsv describes locus i, and its name only overrides the label.
+t_mask_binds_positionally() {
+    mask_setup || return 1
+    # Same coordinates, but shift every name up by one (locus1->locus2, ...) so
+    # none matches the synthesized label of its own locus. Row order == locus
+    # order is preserved, so positional binding still lands each row correctly;
+    # the old name-first matching orphaned the first locus here.
+    awk 'BEGIN{FS=OFS="\t"} NR==1{print;next} {$1="locus" NR; print}' \
+        "$tmp/mk.loci.tsv" > "$tmp/mk_shift.loci.tsv"
+    read -r c b e _ < "$data/loci.bed"          # first locus, 0-based BED
+    printf '%s\t%d\t%d\n' "$c" $((b + 10)) $((b + 20)) > "$tmp/m2.bed"
+    printf 'ind1\t%s/m2.bed\n' "$tmp" > "$tmp/masks2.tsv"
+    "$bin" mask "$tmp/mk.txt" --masks "$tmp/masks2.tsv" --quiet \
+        --loci-tsv "$tmp/mk_shift.loci.tsv" --out "$tmp/mkp" >/dev/null 2>&1 || return 1
+    # The first locus must still be masked to keep only offsets 10..19; it would
+    # be left untouched if the shifted name had orphaned it of coordinates.
+    seq=$(awk '/^\^ind1/{print $2; exit}' "$tmp/mkp.txt")
+    [ -n "$seq" ] || return 1
+    pre=$(printf '%s' "$seq" | cut -c1-10  | tr -d 'N')
+    mid=$(printf '%s' "$seq" | cut -c11-20 | tr -d 'N')
+    [ -z "$pre" ] && [ -n "$mid" ]
+}
+run "100. mask binds .loci.tsv rows positionally, not by synthesized name" t_mask_binds_positionally
+
 # ── Summary ───────────────────────────────────────────────────────────────
 echo
 if [ "$skip" -gt 0 ]; then

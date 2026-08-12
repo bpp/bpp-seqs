@@ -279,13 +279,16 @@ int bpp_attach_loci_tsv(BppLocus *loci, int n_loci, const char *tsv_path)
         int nf = split_tsv(line, fields, 16);
         if (nf < 1) continue;
 
-        /* Match by name first; fall back to positional. */
+        /* Bind positionally. A BPP sequence file carries no locus names, so
+         * bpp_parse_file synthesizes sequential "locusN" labels; matching the
+         * .loci.tsv name against those mis-binds whenever the tsv names are the
+         * original (post-QC, non-contiguous) window indices -- a row named
+         * "locus1601" would hit the 1601st parsed locus, not the 1st. The
+         * sequence file and its .loci.tsv are written in the same order by
+         * construction, so row i describes locus i; the name below only
+         * overrides the synthesized label. */
         const char *name = fields[0];
-        BppLocus *target = NULL;
-        for (int i = 0; i < n_loci; i++) {
-            if (loci[i].name && strcmp(loci[i].name, name) == 0) { target = &loci[i]; break; }
-        }
-        if (!target && row_index < n_loci) target = &loci[row_index];
+        BppLocus *target = (row_index < n_loci) ? &loci[row_index] : NULL;
         row_index++;
         if (!target) continue;
 
