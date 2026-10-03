@@ -13,14 +13,18 @@ and either converts them or tells you exactly what is still missing.
 brew install bpp/tap/bpp-seqs
 ```
 
-**Linux (HPC):** download the static `linux-x86_64` binary from the
-[latest release](https://github.com/bpp/bpp-seqs/releases) — htslib is linked
-in, so there is no runtime dependency to load:
+**Prebuilt binaries:** the [latest release](https://github.com/bpp/bpp-seqs/releases)
+has `linux-x86_64` (fully static: runs on any distribution, including HPC
+clusters), `macos-arm64` and `macos-x86_64` (need only system libraries).
+htslib is linked in, so there is nothing else to install:
 
 ```
-tar xzf bpp-seqs-*-linux-x86_64.tar.gz
+tar xzf bpp-seqs-*-<platform>.tar.gz
 ./bpp-seqs-*/bpp-seqs --version
 ```
+
+The macOS binaries are built without lzma, so they cannot read CRAM files that
+use the (uncommon) lzma codec; Homebrew builds have no such limit.
 
 ## Build from source
 

@@ -1,16 +1,22 @@
 name: release
 
 # Triggered by pushing a tag matching v*, e.g. `git tag v0.1.0 && git push --tags`.
-# Builds ONE self-contained artifact: a Linux x86_64 binary with htslib linked
-# statically (no libhts runtime dependency), suitable for HPC clusters. macOS
-# users install from source via Homebrew (see bump-homebrew below), which is why
-# there is no prebuilt macOS binary here. Pre-release tags (containing '-', e.g.
-# v0.1.0-rc1) are auto-marked as pre-releases and skip the Homebrew bump.
+# Builds self-contained binaries with htslib linked statically:
+#   - linux-x86_64: fully static (htslib, compression libs and glibc), so it
+#     runs on any distribution, including older HPC clusters.
+#   - macos-arm64 / macos-x86_64: htslib static; only system libraries
+#     (libz, libbz2, libSystem) are linked dynamically, so it runs on a stock
+#     Mac. Built without lzma (not in the macOS SDK): CRAM files using the
+#     lzma codec can't be read; everything else can.
+# Run it by hand (Actions > release > Run workflow) to test the builds without
+# publishing. Pre-release tags (containing '-', e.g. v0.1.0-rc1) skip the
+# Homebrew bump.
 
 on:
   push:
     tags:
       - 'v*'
+  workflow_dispatch:
 
 permissions:
   contents: write
@@ -19,92 +25,142 @@ env:
   HTSLIB_VERSION: '1.21'
 
 jobs:
-  build-linux:
-    name: Build linux-x86_64 (static htslib)
-    runs-on: ubuntu-latest
+  build:
+    name: Build ${{ matrix.target }}
+    runs-on: ${{ matrix.os }}
+    strategy:
+      fail-fast: true
+      matrix:
+        include:
+          - target: linux-x86_64
+            os: ubuntu-latest
+          - target: macos-arm64
+            os: macos-latest
+            arch: arm64
+          - target: macos-x86_64
+            os: macos-latest       # cross-compiled on Apple Silicon
+            arch: x86_64
+            host: x86_64-apple-darwin
+    env:
+      MACOSX_DEPLOYMENT_TARGET: "11.0"
     steps:
       - uses: actions/checkout@v4
 
-      - name: Install htslib build dependencies
+      - name: Install htslib build dependencies (Linux)
+        if: runner.os == 'Linux'
         run: |
           sudo apt-get update
           # zlib/bz2/lzma (for htslib) + libc6-dev provides the static archives
           # (.a) the fully-static (-static) link needs, including libc.a.
           sudo apt-get install -y zlib1g-dev libbz2-dev liblzma-dev libc6-dev
 
-      - name: Build static htslib ${{ env.HTSLIB_VERSION }}
+      - name: Fetch htslib ${{ env.HTSLIB_VERSION }}
         run: |
           set -euo pipefail
           V="${HTSLIB_VERSION}"
           curl -fsSL -o "htslib-${V}.tar.bz2" \
             "https://github.com/samtools/htslib/releases/download/${V}/htslib-${V}.tar.bz2"
           tar xjf "htslib-${V}.tar.bz2"
-          cd "htslib-${V}"
-          ./configure --disable-libcurl --disable-plugins
-          make -j"$(nproc)"
+          mv "htslib-${V}" htslib
 
-      - name: Build bpp-seqs (fully static)
+      - name: Build static htslib (Linux)
+        if: runner.os == 'Linux'
+        run: |
+          cd htslib
+          ./configure --disable-libcurl --disable-plugins
+          make -j"$(nproc)" lib-static
+
+      - name: Build static htslib (macOS ${{ matrix.arch }})
+        if: runner.os == 'macOS'
         run: |
           set -euo pipefail
-          V="${HTSLIB_VERSION}"
+          cd htslib
+          # Nothing optional, so nothing from Homebrew can be picked up.
+          ./configure ${{ matrix.host && format('--host={0}', matrix.host) || '' }} \
+            CC="cc -arch ${{ matrix.arch }}" \
+            --disable-libcurl --disable-plugins --disable-lzma --disable-gcs \
+            --disable-s3 --without-libdeflate
+          make -j"$(sysctl -n hw.ncpu)" lib-static
+
+      - name: Build bpp-seqs (Linux, fully static)
+        if: runner.os == 'Linux'
+        run: |
           # FULLY static (-static): bundle htslib, its compression deps
           # (bz2/lzma/z), AND glibc, so there is no runtime dependency of any
-          # kind. This is required for HPC portability: the runner's glibc
-          # (Ubuntu 24.04 = 2.39) is NEWER than most clusters' (RHEL/Rocky), so a
-          # glibc-dynamic binary fails with "GLIBC_2.xx not found". Safe to fully
-          # static here because --disable-libcurl/--disable-plugins mean no
-          # network, NSS, or dlopen paths. -static makes every -l resolve to its
-          # .a, so no -Bstatic/-Bdynamic juggling is needed.
-          make HTSLIB_A="$PWD/htslib-${V}/libhts.a" HTSLIB_INC="$PWD/htslib-${V}" \
+          # kind. Required for HPC portability: the runner's glibc is NEWER than
+          # most clusters'. Safe because --disable-libcurl/--disable-plugins mean
+          # no network, NSS, or dlopen paths.
+          make HTSLIB_A="$PWD/htslib/libhts.a" HTSLIB_INC="$PWD/htslib" \
                HTSLIB_STATIC_DEPS="-lbz2 -llzma -lz -lpthread -lm" \
                EXTRA_LDFLAGS="-static"
 
-      - name: Verify the binary is fully static
+      - name: Build bpp-seqs (macOS ${{ matrix.arch }})
+        if: runner.os == 'macOS'
+        run: |
+          make HTSLIB_A="$PWD/htslib/libhts.a" HTSLIB_INC="$PWD/htslib" \
+               HTSLIB_STATIC_DEPS="-lbz2 -lz -lpthread -lm" \
+               EXTRA_CFLAGS="-arch ${{ matrix.arch }}" EXTRA_LDFLAGS="-arch ${{ matrix.arch }}"
+
+      - name: Check linkage
+        shell: bash
         run: |
           set -euo pipefail
           file bpp-seqs
-          ldd bpp-seqs 2>&1 || true   # informational; "not a dynamic executable" expected
-          # `file` is the authoritative check: a fully static ELF says
-          # "statically linked" (a glibc-dynamic one says "dynamically linked").
-          if ! file bpp-seqs | grep -q 'statically linked'; then
-            echo "ERROR: binary is not statically linked; it will break on older-glibc hosts." >&2
-            exit 1
+          if [ "$RUNNER_OS" = Linux ]; then
+            file bpp-seqs | grep -q 'statically linked' \
+              || { echo "ERROR: not statically linked; it will break on older-glibc hosts" >&2; exit 1; }
+          else
+            file bpp-seqs | grep -q "${{ matrix.arch }}"
+            otool -L bpp-seqs
+            if otool -L bpp-seqs | tail -n +2 | grep -v -E '^\s+(/usr/lib/|/System/)'; then
+              echo "ERROR: linked against a library a stock Mac does not have" >&2
+              exit 1
+            fi
           fi
-          ./bpp-seqs --version
 
-      - name: Smoke-test the examples
+      - name: Smoke test
+        shell: bash
         run: |
           set -euo pipefail
-          ( cd examples/01-fasta && \
-            ../../bpp-seqs locusA.fa locusB.fa --imap imap.txt --out /tmp/d1 && \
-            test -s /tmp/d1.txt )
-          ( cd examples/02-bam && \
-            ../../bpp-seqs ind1.bam ind2.bam ind3.bam ind4.bam ref.fa loci.bed \
-              --imap imap.txt --out /tmp/d2 && \
-            test -s /tmp/d2.txt )
+          RUN=./bpp-seqs
+          if [ "${{ matrix.target }}" = macos-x86_64 ]; then
+            if arch -x86_64 /usr/bin/true 2>/dev/null; then RUN="arch -x86_64 ./bpp-seqs"
+            else echo "No Rosetta on this runner; skipping the x86_64 smoke test"; exit 0; fi
+          fi
+          $RUN --version
+          B="$PWD/bpp-seqs"; R="${RUN%./bpp-seqs}$B"
+          for ex in 01-fasta-anastrepha 02-phylip-ascidian 03-nexus-milksnake; do
+            ( cd "examples/$ex" && $R loci/* --imap imap.txt --out "$RUNNER_TEMP/$ex" --quiet \
+              && test -s "$RUNNER_TEMP/$ex.txt" && echo "$ex ok" )
+          done
+          d=tests/data
+          $R $d/ind1.bam $d/ind2.bam $d/ind3.bam $d/ind4.bam $d/test_ref.fa $d/loci.bed \
+             --imap $d/imap.txt --out "$RUNNER_TEMP/bam" --quiet && test -s "$RUNNER_TEMP/bam.txt" && echo "bam ok"
+          $R $d/ind1.cram $d/ind2.cram $d/ind3.cram $d/ind4.cram $d/test_ref.fa $d/loci.bed \
+             --imap $d/imap.txt --out "$RUNNER_TEMP/cram" --quiet && test -s "$RUNNER_TEMP/cram.txt" && echo "cram ok"
 
       - name: Stage artifact
         shell: bash
         run: |
           set -euo pipefail
           VERSION="${GITHUB_REF_NAME#v}"
-          STAGE="bpp-seqs-${VERSION}-linux-x86_64"
+          STAGE="bpp-seqs-${VERSION}-${{ matrix.target }}"
           mkdir -p "$STAGE"
           cp bpp-seqs README.md LICENSE "$STAGE/"
           cp -r examples "$STAGE/"
           tar -czf "${STAGE}.tar.gz" "$STAGE"
-          echo "STAGE=$STAGE" >> "$GITHUB_ENV"
 
       - name: Upload artifact
         uses: actions/upload-artifact@v4
         with:
-          name: linux-x86_64
-          path: bpp-seqs-*-linux-x86_64.tar.gz
+          name: ${{ matrix.target }}
+          path: bpp-seqs-*-${{ matrix.target }}.tar.gz
           if-no-files-found: error
 
   release:
     name: Publish GitHub Release
-    needs: build-linux
+    needs: build
+    if: startsWith(github.ref, 'refs/tags/v')
     runs-on: ubuntu-latest
     permissions:
       contents: write
