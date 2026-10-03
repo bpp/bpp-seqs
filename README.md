@@ -86,9 +86,10 @@ bpp-seqs [options] file1 file2 ...
 
 Files may be given in any order; type is detected from content, not extension.
 
-Two subcommands sit alongside this flow: `bpp-seqs windows` builds a BED of
-candidate loci when you don't have one, and `bpp-seqs extract` subsets an
-already-converted BPP file. See [Subcommands](#subcommands).
+Subcommands sit alongside this flow: `bpp-seqs windows` builds a BED of
+candidate loci when you don't have one, `bpp-seqs extract` subsets an
+already-converted BPP file, and `bpp-seqs check` verifies a sequence file's
+locus, sequence and site counts. See [Subcommands](#subcommands).
 
 ## Input formats and the workflow each selects
 
@@ -384,4 +385,35 @@ bpp-seqs extract run1.txt --chrom chr1 --min-sites 500 --out subset
 
 # A quick 50-locus test set
 bpp-seqs extract run1.txt --first 50 --out smoke
+```
+
+### `bpp-seqs check` — verify a sequence file
+
+Identifies a sequence file's format from its content (gzip allowed) and checks
+that it agrees with what it declares. Nothing is written.
+
+```
+bpp-seqs check FILE [--nloci N] [--json]
+```
+
+| Format | What is checked |
+|--------|-----------------|
+| BPP / PHYLIP | Every locus: its `<n_seqs> <n_sites>` header against the number of sequences that follow and the number of sites in each. Sequential, wrapped (indented continuation rows) and interleaved layouts are all followed. |
+| FASTA | One locus; every record must have the same length. |
+| NEXUS | One locus, or one per `CHARSET`; the `MATRIX` must match `DIMENSIONS ntax`/`nchar` and each `CHARSET` must lie within `nchar`. |
+
+| Option | Meaning |
+|--------|---------|
+| `--nloci N` | Also require exactly N loci (e.g. the control file's `nloci`) |
+| `--json` | Emit the report as JSON: `format`, `ok`, `n_loci`, `errors[]` (`code`, `locus`, `line`, `message`) and `loci[]` (declared and found counts per locus) |
+| `-h`, `--help` | Show help and exit |
+
+Error codes: `SEQ_COUNT` (sequences found ≠ declared), `SITE_COUNT` (a
+sequence's length ≠ declared, or FASTA records of unequal length), `NLOCI`
+(≠ `--nloci`), `CHARSET_RANGE`, `NEXUS_PARSE`, `NO_LOCI`. Lines are read whole
+whatever their length. Exit status: `0` the file passes, `2` errors were found,
+`1` a usage error or a file that is not a sequence alignment.
+
+```sh
+bpp-seqs check run1.txt --nloci 349
 ```

@@ -72,6 +72,8 @@ SRCS := \
   src/cmd_extract.c \
   src/cmd_windows.c \
   src/cmd_mask.c \
+  src/cmd_check.c \
+  src/lineio.c \
   src/bam2bpp/pileup.c \
   src/bam2bpp/genotype.c \
   src/bam2bpp/locus.c \

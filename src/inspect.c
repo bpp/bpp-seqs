@@ -4,6 +4,7 @@
 
 #include "inspect.h"
 #include "nexus.h"
+#include "lineio.h"
 
 #include <ctype.h>
 #include <errno.h>
@@ -481,6 +482,11 @@ static FileType detect_type(const char *path)
     int n = read_head_text(path, buf, sizeof(buf));
     if (n <= 0) return BS_UNKNOWN;
     return detect_type_from_text(buf, n);
+}
+
+FileType detect_file_type(const char *path)
+{
+    return detect_type(path);
 }
 
 /* ────────────────────────────────────────────────────────────────────────
@@ -1199,8 +1205,9 @@ static void validate_phylip(const char *path, FileInfo *fi, int nseq, int nsites
 {
     gzFile gz = gzopen(path, "rb");
     if (!gz) return;
-    char line[1 << 16];
-    if (gzgets(gz, line, sizeof(line)) == NULL) { gzclose(gz); return; }  /* header */
+    char  *line = NULL;
+    size_t cap = 0;
+    if (gz_getline(gz, &line, &cap) < 0) { gzclose(gz); free(line); return; }  /* header */
 
     char **names = (char **)calloc((size_t)nseq, sizeof(char *));
     int *lens = (int *)calloc((size_t)nseq, sizeof(int));
@@ -1208,7 +1215,7 @@ static void validate_phylip(const char *path, FileInfo *fi, int nseq, int nsites
     int blank_since_name = 0;    /* a blank line closed the last row's block */
     int ilv = 0;                 /* sample an interleaved block row belongs to */
     char bad_example = 0;
-    while (gzgets(gz, line, sizeof(line)) != NULL) {
+    while (gz_getline(gz, &line, &cap) >= 0) {
         rtrim(line);
         int empty = 1;
         for (char *c = line; *c; c++) if (!isspace((unsigned char)*c)) { empty = 0; break; }
@@ -1246,6 +1253,7 @@ static void validate_phylip(const char *path, FileInfo *fi, int nseq, int nsites
         lens[target] += slen;
     }
     gzclose(gz);
+    free(line);
 
     char msg[256];
     if (got < nseq) {
@@ -1354,14 +1362,17 @@ static void inspect_phylip(const char *path, FileInfo *fi)
         file_info_add_warning(fi, "OPEN_FAILED", "error", "Could not open PHYLIP file.");
         return;
     }
-    char line[1 << 16];
-    if (gzgets(gz, line, sizeof(line)) == NULL) {
+    char  *line = NULL;
+    size_t cap = 0;
+    if (gz_getline(gz, &line, &cap) < 0) {
         gzclose(gz);
+        free(line);
         return;
     }
     int nseq = 0, nsites = 0;
     if (sscanf(line, "%d %d", &nseq, &nsites) != 2 || nseq <= 0 || nsites <= 0) {
         gzclose(gz);
+        free(line);
         return;
     }
     fi->phylip_n_sequences = nseq;
@@ -1369,12 +1380,17 @@ static void inspect_phylip(const char *path, FileInfo *fi)
 
     /* Read the next non-blank line to peek at format + capture first name */
     long mark_after_header = gztell(gz);
-    if (gzgets(gz, line, sizeof(line)) == NULL) {
+    long got_row;
+    while ((got_row = gz_getline(gz, &line, &cap)) >= 0) {
+        rtrim(line);
+        if (*line) break;           /* skip blank lines after the header */
+    }
+    if (got_row < 0) {
         gzclose(gz);
+        free(line);
         fi->phylip_format = xstrdup("sequential");
         return;
     }
-    rtrim(line);
     /* count sequence-like characters after first whitespace-delimited name */
     char *p = line;
     while (*p && !isspace((unsigned char)*p)) p++;
@@ -1395,7 +1411,7 @@ static void inspect_phylip(const char *path, FileInfo *fi)
     miss += gap_chars + n_chars;
     tot  += total;
     int lines_scanned = 1;
-    while (lines_scanned < 200 && gzgets(gz, line, sizeof(line)) != NULL) {
+    while (lines_scanned < 200 && gz_getline(gz, &line, &cap) >= 0) {
         rtrim(line);
         if (!*line) continue;
         p = line;
@@ -1421,7 +1437,7 @@ static void inspect_phylip(const char *path, FileInfo *fi)
         NameSet set;
         nameset_init(&set);
         int want = 0;                    /* named rows still expected */
-        while (gzgets(gz, line, sizeof(line)) != NULL) {
+        while (gz_getline(gz, &line, &cap) >= 0) {
             int empty = 1;
             for (char *c = line; *c; c++) if (!isspace((unsigned char)*c)) { empty = 0; break; }
             if (empty) continue;
@@ -1462,7 +1478,7 @@ static void inspect_phylip(const char *path, FileInfo *fi)
     gz = gzopen(path, "rb");
     if (gz) {
         int loci = 0;
-        while (gzgets(gz, line, sizeof(line)) != NULL) {
+        while (gz_getline(gz, &line, &cap) >= 0) {
             int a, b, extra = 0;
             char tail[8] = {0};
             int got_scan = sscanf(line, "%d %d %7s", &a, &b, tail);
@@ -1481,6 +1497,7 @@ static void inspect_phylip(const char *path, FileInfo *fi)
         }
     }
     (void)mark_after_header;
+    free(line);
 }
 
 /* ────────────────────────────────────────────────────────────────────────

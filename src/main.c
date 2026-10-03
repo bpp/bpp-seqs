@@ -20,6 +20,7 @@
 #include "cmd_extract.h"
 #include "cmd_windows.h"
 #include "cmd_mask.h"
+#include "cmd_check.h"
 #include "converters/converters.h"
 #include "converters/aln_writer.h"
 #include "bam2bpp/bam2bpp.h"
@@ -75,6 +76,8 @@ static void print_usage(FILE *fp, const char *prog)
 "                        write them as a BED for the conversion flow below.\n"
 "  mask INPUT.txt        Replace positions outside a per-sample mappability\n"
 "                        mask with N in an existing BPP sequence file.\n"
+"  check FILE            Identify a sequence file's format and verify its\n"
+"                        locus count and per-locus sequence and site counts.\n"
 "\n"
 "General:\n"
 "  --out PREFIX          Output file prefix for BPP files (required for conversion)\n"
@@ -810,6 +813,9 @@ int main(int argc, char **argv)
     }
     if (strcmp(argv[1], "mask") == 0) {
         return cmd_mask(argc - 1, argv + 1);
+    }
+    if (strcmp(argv[1], "check") == 0) {
+        return cmd_check(argc - 1, argv + 1);
     }
     /* No verb matched → fall through to the existing inspect/convert flow. */
 

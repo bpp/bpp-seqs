@@ -238,6 +238,7 @@ static int read_matrix(const char *start, const char *end, int ntax, int nchar,
             }
         }
     }
+    doc->n_excess = excess;
     if (excess > 0)
         fprintf(stderr, "WARNING: NEXUS MATRIX: %ld character%s beyond declared "
                 "nchar=%d were dropped (header/data mismatch).\n",

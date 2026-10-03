@@ -30,6 +30,7 @@ typedef struct {
     int    *cs_end;
     int    *cs_stride;
 
+    long    n_excess;    /* MATRIX characters beyond nchar (dropped) */
     double  missing_fraction;
     char    datatype[16];   /* lowercased, e.g. "dna" ("" if unspecified) */
     int     interleaved;

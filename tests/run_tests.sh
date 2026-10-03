@@ -1529,6 +1529,150 @@ t_mask_binds_positionally() {
 }
 run "100. mask binds .loci.tsv rows positionally, not by synthesized name" t_mask_binds_positionally
 
+# ── Scenarios 101–109: `check` subcommand ─────────────────────────────────
+
+# Exit status of `check`: 0 pass, 2 errors found, 1 not checkable.
+check_rc() { "$bin" check "$@" >/dev/null 2>&1; echo $?; }
+
+t_check_ok() {
+    local out
+    out=$("$bin" check "$data/multi.phy" 2>/dev/null) || return 1
+    echo "$out" | grep -q "Format:  BPP" &&
+    echo "$out" | grep -q "Loci:    3" &&
+    echo "$out" | grep -q "Result:  OK"
+}
+run "101. check passes a well-formed multi-locus file" t_check_ok
+
+t_check_seq_count() {
+    printf '3 10\n^a ACGTACGTAC\n^b ACGTACGTAC\n\n2 5\n^a ACGTA\n^b ACGTA\n' > "$tmp/ck1.txt"
+    local out
+    out=$("$bin" check "$tmp/ck1.txt" 2>/dev/null)
+    [ "$(check_rc "$tmp/ck1.txt")" = 2 ] &&
+    echo "$out" | grep -q "SEQ_COUNT.*locus 1 declares 3 sequences but has 2"
+}
+run "102. check reports a locus with fewer sequences than declared" t_check_seq_count
+
+t_check_site_count() {
+    printf '2 10\n^a ACGTACGTAC\n^b ACGTACGT\n2 4\n^a ACGT\n^b ACGT\n' > "$tmp/ck2.txt"
+    local out
+    out=$("$bin" check "$tmp/ck2.txt" 2>/dev/null)
+    [ "$(check_rc "$tmp/ck2.txt")" = 2 ] &&
+    echo "$out" | grep -q "line 3: \[SITE_COUNT\] locus 1: sequence '^b' has 8 sites"
+}
+run "103. check reports a sequence whose length differs from the header" t_check_site_count
+
+t_check_nloci() {
+    [ "$(check_rc "$data/multi.phy" --nloci 3)" = 0 ] &&
+    [ "$(check_rc "$data/multi.phy" --nloci 4)" = 2 ]
+}
+run "104. check --nloci compares the locus count" t_check_nloci
+
+# Lines longer than the 64 kb buffers used elsewhere must be read whole; a
+# split row would be miscounted as an extra sequence.
+t_check_long_lines() {
+    python3 -c "
+s = 'A' * 100000
+open('$tmp/ck3.txt', 'w').write('2 100000\n^a ' + s + '\n^b ' + s + '\n2 5\n^a ACGTA\n^b ACGTA\n')"
+    [ "$(check_rc "$tmp/ck3.txt" --nloci 2)" = 0 ]
+}
+run "105. check reads loci longer than 64 kb on one line" t_check_long_lines
+
+t_check_layouts() {
+    printf '2 12\n^a ACGTAC\n   GTACGT\n^b ACGTAC\n   GTACGT\n' > "$tmp/ck4.txt"
+    printf '2 12\n^a ACGTAC\n^b ACGTAC\n\n GTACGT\n GTACGT\n' > "$tmp/ck5.txt"
+    printf '2 12\n^a ACGTAC\n^b ACGTAC\n\n GTACGT\n GTACG\n'  > "$tmp/ck6.txt"
+    [ "$(check_rc "$tmp/ck4.txt")" = 0 ] &&
+    [ "$(check_rc "$tmp/ck5.txt")" = 0 ] &&
+    [ "$(check_rc "$tmp/ck6.txt")" = 2 ]
+}
+run "106. check follows wrapped and interleaved layouts" t_check_layouts
+
+t_check_fasta() {
+    printf '>a\nACGTACGT\n>b\nACGTAC\n' > "$tmp/ck7.fa"
+    [ "$(check_rc "$data/msa1.fa")" = 0 ] &&
+    [ "$(check_rc "$tmp/ck7.fa")" = 2 ]
+}
+run "107. check requires FASTA records of equal length" t_check_fasta
+
+t_check_nexus() {
+    printf '#NEXUS\nbegin data;\ndimensions ntax=2 nchar=4;\nformat datatype=dna;\nmatrix\na ACGTAA\nb ACGTAA\n;\nend;\n' > "$tmp/ck8.nex"
+    [ "$(check_rc "$data/aln.nex")" = 0 ] &&
+    [ "$(check_rc "$tmp/ck8.nex")" = 2 ]
+}
+run "108. check rejects NEXUS data beyond the declared nchar" t_check_nexus
+
+t_check_not_alignment() {
+    [ "$(check_rc "$data/loci.bed")" = 1 ]
+}
+run "109. check refuses a file that is not a sequence alignment" t_check_not_alignment
+
+t_check_json() {
+    printf '2 10\n^a ACGTACGTAC\n^b ACGTACGT\n' > "$tmp/ck9.txt"
+    local out
+    out=$("$bin" check "$tmp/ck9.txt" --json --nloci 1 2>/dev/null)
+    printf '%s' "$out" | python3 -c "
+import json, sys
+d = json.load(sys.stdin)
+assert d['format'] == 'PHYLIP' and d['ok'] is False and d['n_loci'] == 1
+assert d['expected_nloci'] == 1
+assert [e['code'] for e in d['errors']] == ['SITE_COUNT']
+assert d['loci'][0]['declared_sites'] == 10 and d['loci'][0]['min_sites'] == 8
+"
+}
+run "110. check --json reports errors and per-locus counts" t_check_json
+
+# ── Scenarios 111–114: sequence rows longer than 64 kb ────────────────────
+# BPP files keep each sequence on one line, and real loci run to hundreds of
+# kilobases. Fixed 64 kb line buffers split such rows and misread the rest as
+# a new row, so every reader of sequence rows must take lines whole.
+
+# Two loci: a 100,000-site one (with one SNP, so locus QC keeps it) and a
+# short one after it, to prove the parse continues past the long locus.
+make_long_bpp() {
+    python3 -c "
+s = 'A' * 100000
+t = 'A' * 50000 + 'C' + 'A' * 49999
+open('$tmp/long.txt', 'w').write(
+    '2 100000\n^a ' + s + '\n^b ' + t + '\n\n2 5\n^a ACGTA\n^b ACGTT\n')"
+    printf 'a\tP1\nb\tP2\n' > "$tmp/long.imap"
+}
+
+t_long_extract() {
+    make_long_bpp
+    local out
+    out=$("$bin" extract "$tmp/long.txt" --last 1 --imap "$tmp/long.imap" \
+              --out "$tmp/longx" --json 2>/dev/null) || return 1
+    echo "$out" | grep -q '"n_loci_input": 2' &&
+    [ "$(check_rc "$tmp/longx.txt" --nloci 1)" = 0 ]
+}
+run "111. extract reads loci longer than 64 kb on one line" t_long_extract
+
+t_long_convert() {
+    make_long_bpp
+    # Both loci must be read; QC then drops the 5-site one (--min-length 100).
+    local conv out
+    conv=$("$bin" --out "$tmp/longc" "$tmp/long.txt" "$tmp/long.imap" 2>/dev/null) || return 1
+    echo "$conv" | grep -q "1 / 2 loci passed QC" || return 1
+    out=$("$bin" check "$tmp/longc.txt" --nloci 1 2>/dev/null) || return 1
+    echo "$out" | grep -q "Sites per locus:     100000"
+}
+run "112. PHYLIP conversion reads loci longer than 64 kb on one line" t_long_convert
+
+# A blank line between a locus header and its first row is common (bpp-seqs
+# writes one); it must not make the file look interleaved.
+t_inspect_blank_after_header() {
+    make_long_bpp
+    "$bin" --dry-run "$tmp/long.txt" 2>/dev/null | grep -q "PHYLIP sequential"
+}
+run "113. inspect reports sequential layout despite a blank line after the header" t_inspect_blank_after_header
+
+t_parser_warns_malformed() {
+    printf '2 4\n^a ACGT\n^b ACGT\n2 4\n^a ACGT\n^b ACG\n' > "$tmp/bad.txt"
+    "$bin" extract "$tmp/bad.txt" --first 1 --out "$tmp/badx" 2>&1 >/dev/null |
+        grep -q "locus 2 is malformed; read stopped after 1 loci"
+}
+run "114. the BPP parser warns instead of silently stopping at a malformed locus" t_parser_warns_malformed
+
 # ── Summary ───────────────────────────────────────────────────────────────
 echo
 if [ "$skip" -gt 0 ]; then

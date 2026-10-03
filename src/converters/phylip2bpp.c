@@ -1,5 +1,6 @@
 #include "aln_writer.h"
 #include "converters.h"
+#include "lineio.h"
 
 #include <ctype.h>
 #include <stdio.h>
@@ -22,22 +23,28 @@
  * collected exactly `nsites` characters.
  */
 static int parse_one_locus(gzFile gz, char *carry_line, size_t carry_cap,
+                           char **linep, size_t *capp,
                            LocusAln *out, int locus_index)
 {
-    char line[1 << 16];
+    /* *linep is the caller's whole-line buffer (see lineio.h); `line` tracks
+     * it across reallocation. */
+    char *line;
 
     /* Obtain the header line: either passed in via carry, or read fresh. */
     if (carry_line[0] == '\0') {
         do {
-            if (gzgets(gz, line, sizeof(line)) == NULL) return -1;
+            if (gz_getline(gz, linep, capp) < 0) return -1;
+            line = *linep;
             /* skip blank lines */
             int empty = 1;
             for (char *p = line; *p; p++) if (!isspace((unsigned char)*p)) { empty = 0; break; }
             if (!empty) break;
         } while (1);
     } else {
-        strncpy(line, carry_line, sizeof(line) - 1);
-        line[sizeof(line) - 1] = '\0';
+        size_t need = strlen(carry_line) + 1;
+        if (*capp < need) { *capp = need; *linep = (char *)realloc(*linep, need); }
+        memcpy(*linep, carry_line, need);
+        line = *linep;
         carry_line[0] = '\0';
     }
 
@@ -65,7 +72,8 @@ static int parse_one_locus(gzFile gz, char *carry_line, size_t carry_cap,
     int excess_lines = 0;  /* non-blank lines arriving after all samples are full */
 
     while (!all_full) {
-        if (gzgets(gz, line, sizeof(line)) == NULL) break;
+        if (gz_getline(gz, linep, capp) < 0) break;
+        line = *linep;
 
         int empty = 1;
         for (char *p = line; *p; p++) if (!isspace((unsigned char)*p)) { empty = 0; break; }
@@ -154,7 +162,8 @@ static int parse_one_locus(gzFile gz, char *carry_line, size_t carry_cap,
 
     /* After all samples are full, peek for non-blank, non-header lines —
      * those would indicate extra taxa rows beyond declared n_seqs. */
-    while (gzgets(gz, line, sizeof(line)) != NULL) {
+    while (gz_getline(gz, linep, capp) >= 0) {
+        line = *linep;
         int empty = 1;
         for (char *p = line; *p; p++) if (!isspace((unsigned char)*p)) { empty = 0; break; }
         if (empty) continue;
@@ -223,21 +232,24 @@ static int load_phylip_multi(const char *path, LocusAln **out, int *n_out,
 
     LocusAln *arr = NULL;
     int n = 0, cap = 0;
-    char carry[1 << 16];
+    char carry[1 << 16];         /* only ever holds a locus header line */
     carry[0] = '\0';
+    char  *line = NULL;
+    size_t line_cap = 0;
     int idx = starting_index;
 
     for (;;) {
         LocusAln loc; memset(&loc, 0, sizeof(loc));
-        int rc = parse_one_locus(gz, carry, sizeof(carry), &loc, idx);
+        int rc = parse_one_locus(gz, carry, sizeof(carry), &line, &line_cap, &loc, idx);
         if (rc == -1) break;       /* EOF */
-        if (rc == -2) { gzclose(gz); return -2; }
+        if (rc == -2) { gzclose(gz); free(line); return -2; }
         if (n >= cap) { cap = cap ? cap * 2 : 8;
             arr = (LocusAln *)realloc(arr, sizeof(LocusAln) * (size_t)cap); }
         arr[n++] = loc;
         idx++;
     }
     gzclose(gz);
+    free(line);
     *out = arr;
     *n_out = n;
     return 0;

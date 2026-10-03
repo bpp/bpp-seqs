@@ -6,6 +6,7 @@
 #include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
+#include <sys/types.h>
 
 static char *xdup(const char *s)
 {
@@ -52,9 +53,11 @@ static char *post_caret_id(const char *name)
  * malformed.  On success, populates *out and consumes lines up to and
  * including the locus's data (but does not consume the next locus's
  * header — that is left in *carry_line if present). */
-static int read_one_locus(FILE *fp, char *line, size_t cap,
+static int read_one_locus(FILE *fp, char **linep, size_t *capp,
                           BppLocus *out)
 {
+    char *line = *linep;
+    ssize_t len;
     int nseq = 0, nsites = 0;
     if (!looks_like_header(line, &nseq, &nsites)) return -2;
 
@@ -72,7 +75,8 @@ static int read_one_locus(FILE *fp, char *line, size_t cap,
     int row = 0;
     int finished_first_block = 0;
 
-    while (fgets(line, (int)cap, fp) != NULL) {
+    while ((len = getline(linep, capp, fp)) != -1) {
+        line = *linep;
         if (is_blank(line)) {
             if (row > 0) finished_first_block = 1;
             row = 0;
@@ -87,8 +91,8 @@ static int read_one_locus(FILE *fp, char *line, size_t cap,
                 int all_full = 1;
                 for (int i = 0; i < nseq; i++) if (lens[i] < nsites) { all_full = 0; break; }
                 if (all_full) {
-                    /* Rewind so caller's next fgets() sees this header. */
-                    fseek(fp, -(long)strlen(line), SEEK_CUR);
+                    /* Rewind so caller's next getline() sees this header. */
+                    fseek(fp, -(long)len, SEEK_CUR);
                     break;
                 }
             }
@@ -173,10 +177,12 @@ BppLocus *bpp_parse_file(const char *path, int *n_out)
 
     BppLocus *arr = NULL;
     int n = 0, cap = 0;
-    char line[1 << 16];
+    /* Whole lines: a fixed buffer splits long sequence rows (see lineio.h). */
+    char  *line = NULL;
+    size_t line_cap = 0;
 
     /* Find the first header line */
-    while (fgets(line, sizeof(line), fp) != NULL) {
+    while (getline(&line, &line_cap, fp) != -1) {
         if (is_blank(line)) continue;
         int a, b;
         if (looks_like_header(line, &a, &b)) {
@@ -190,9 +196,14 @@ BppLocus *bpp_parse_file(const char *path, int *n_out)
                 cur->source_start = cur->source_end = -1;
                 cur->source_stride = 1;
 
-                int rc = read_one_locus(fp, line, sizeof(line), cur);
+                int rc = read_one_locus(fp, &line, &line_cap, cur);
                 if (rc != 0) {
-                    /* malformed locus or EOF before finishing — best-effort drop */
+                    /* Malformed locus or EOF before finishing: keep what was
+                     * read, but say so -- callers cannot otherwise tell a
+                     * short file from a truncated parse. */
+                    fprintf(stderr, "Warning: %s: locus %d is malformed; "
+                            "read stopped after %d loci. Run `bpp-seqs check` "
+                            "on the file for details.\n", path, n + 1, n);
                     if (cur->seqs) {
                         for (int i = 0; i < cur->n_seqs; i++) {
                             free(cur->seq_names ? cur->seq_names[i] : NULL);
@@ -212,7 +223,7 @@ BppLocus *bpp_parse_file(const char *path, int *n_out)
 
                 /* Look for the next header */
                 int found = 0;
-                while (fgets(line, sizeof(line), fp) != NULL) {
+                while (getline(&line, &line_cap, fp) != -1) {
                     if (is_blank(line)) continue;
                     if (looks_like_header(line, &a, &b)) { found = 1; break; }
                 }
@@ -222,6 +233,7 @@ BppLocus *bpp_parse_file(const char *path, int *n_out)
         }
     }
     fclose(fp);
+    free(line);
 
     *n_out = n;
     if (n == 0) {

@@ -169,6 +169,11 @@ typedef struct FileInfo {
 } FileInfo;
 
 FileInfo *inspect_file(const char *path);
+
+/* Content-based type detection alone, without the per-type inspection
+ * inspect_file() runs (which, for a large sequence file, means several full
+ * passes). FASTA is reported as BS_FASTA_MSA; only inspection refines it. */
+FileType  detect_file_type(const char *path);
 void      file_info_free(FileInfo *fi);
 
 /* Append a warning. Severity is "info"|"warning"|"error"|"critical". */
