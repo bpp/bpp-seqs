@@ -26,7 +26,7 @@
 #include "bam2bpp/bam2bpp.h"
 #include "bam2bpp/vcf_phase.h"
 
-#define BPP_SEQS_VERSION "0.2.0"
+#define BPP_SEQS_VERSION "0.3.0"
 
 /* ────────────────────────────────────────────────────────────────────────
  * CLI options
